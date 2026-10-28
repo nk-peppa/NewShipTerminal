@@ -1,0 +1,178 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:"
+    />
+    <title>USV Terminal</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header>
+        <div class="brand">
+          <button id="menu-btn" class="menu-btn" title="菜单（手柄 Menu 键）：用左摇杆选择控件，A 确认，B 退出">
+            <span id="menu-icon"></span>
+          </button>
+          <h1>USV Terminal</h1>
+          <span id="menu-hint" class="menu-hint">MENU</span>
+        </div>
+        <div class="pills">
+          <span id="link-pill" class="pill bad">链路：未连接</span>
+          <span id="ship-pill" class="pill idle">在场船只：0</span>
+          <span id="pad-pill" class="pill idle">手柄：未检测到</span>
+        </div>
+      </header>
+
+      <main>
+        <div class="col-left">
+          <section class="panel radar-panel">
+            <h2>激光雷达 · 点云</h2>
+            <div class="radar-toolbar">
+              <label class="mono range-label">
+                量程
+                <select id="radar-range">
+                  <option value="12" selected>12 m</option>
+                  <option value="3">3 m</option>
+                  <option value="2">2 m</option>
+                  <option value="4">4 m</option>
+                  <option value="6">6 m</option>
+                  <option value="0">自动</option>
+                </select>
+              </label>
+            </div>
+            <div id="radar-wrap" class="canvas-wrap"><canvas id="radar"></canvas></div>
+            <div id="radar-info" class="mono info-line">等待点云…</div>
+          </section>
+
+          <section class="panel control">
+            <h2>控制</h2>
+            <div class="bars">
+              <div class="bar-col">
+                <span class="label">油门</span>
+                <div class="bar track"><div id="thr-bar" class="fill thr"></div></div>
+                <span id="thr-val" class="value">0%</span>
+              </div>
+              <div class="bar-col">
+                <span class="label">舵角</span>
+                <div class="bar track"><div id="rud-bar" class="fill rud"></div></div>
+                <span id="rud-val" class="value">0°</span>
+              </div>
+            </div>
+            <div class="buttons">
+              <button id="arm-btn" class="btn arm">
+                <span id="arm-label" class="btn-label">解锁 ARM</span>
+                <span id="arm-key" class="btn-key"></span>
+              </button>
+              <button id="estop-btn" class="btn estop">
+                <span id="estop-label" class="btn-label">急停</span>
+                <span id="estop-key" class="btn-key"></span>
+              </button>
+            </div>
+            <p class="hint">
+              左摇杆 油门·舵角 · 右摇杆 地图平移 · R3 回跟随<br />
+              LB/RB 旋转 · LT/RT 缩放 · View 存图
+            </p>
+          </section>
+        </div>
+
+        <section class="panel slam-panel">
+          <div id="map-wrap" class="canvas-wrap"><canvas id="map"></canvas></div>
+          <div id="map-info" class="mono info-line">等待 SLAM 地图…</div>
+        </section>
+
+        <section class="panel telemetry" id="telemetry">
+          <div class="telemetry-scroll" id="telemetry-scroll">
+            <h2>船端状态</h2>
+            <dl class="mono">
+              <dt title="单程延迟无法从一次往返中分离；此处按上下行对称假设各取往返的一半">
+                上行延迟
+              </dt>
+              <dd id="st-up">—</dd>
+              <dt title="单程延迟无法从一次往返中分离；此处按上下行对称假设各取往返的一半">
+                下行延迟
+              </dt>
+              <dd id="st-down">—</dd>
+              <dt>控制频率</dt><dd id="st-hz">—</dd>
+              <dt>实际油门</dt><dd id="st-thr">—</dd>
+              <dt>方向</dt><dd id="st-dir">—</dd>
+              <dt>标志</dt><dd id="st-flags">—</dd>
+              <dt>点数/圈数</dt><dd id="st-pts">—</dd>
+              <dt>RX 错误</dt><dd id="st-err">0</dd>
+            </dl>
+
+          <h2>SLAM</h2>
+          <div id="pose" class="mono">等待位姿…</div>
+          <div id="pose-status" class="mono muted">—</div>
+          <div id="algo" class="mono muted">算法进程：—</div>
+          <div class="slam-actions">
+            <button
+              id="save-slam-btn"
+              class="btn sm"
+              title="把 SLAM 地图与轨迹导出成 ZIP（手柄 View 键）"
+            >
+              <span class="btn-label">保存数据</span>
+              <span id="save-slam-key" class="btn-key"></span>
+            </button>
+            <button id="clear-map-btn" class="btn sm" title="清空 SLAM 地图（菜单 → A）">
+              <span class="btn-label">清空地图</span>
+            </button>
+          </div>
+          <div id="slam-io" class="mono muted"></div>
+
+          <h2>链路恢复</h2>
+          <button id="reconnect-btn" class="btn">立即重连</button>
+          <div id="link-hint" class="mono muted">已连接</div>
+          <details id="sop" class="sop">
+            <summary>断链 / 未自启 排查步骤</summary>
+            <ol>
+              <li>先点上面的「立即重连」（跳过 2s 退避，立刻重试一次）</li>
+              <li>
+                船端服务是否在跑：
+                <code class="copy">systemctl is-active usv-edge</code>
+              </li>
+              <li>
+                未启动则拉起：
+                <code class="copy">systemctl start usv-edge</code>
+              </li>
+              <li>
+                启动失败看原因：
+                <code class="copy">journalctl -u usv-edge -b -n 30 --no-pager</code>
+              </li>
+              <li>
+                开机自启是否还在：
+                <code class="copy">systemctl is-enabled usv-edge</code>（应为 enabled）
+              </li>
+              <li>
+                端口是否被旧服务占用：
+                <code class="copy">ss -lntp | grep 9527</code>
+              </li>
+              <li>
+                仍未恢复则整机重启：
+                <code class="copy">systemctl reboot</code>
+              </li>
+            </ol>
+            <p class="muted mono">
+              提示：每条命令点一下即可复制；目标地址见顶部「链路」胶囊。
+            </p>
+          </details>
+
+          <h2>固件</h2>
+          <div id="fw-version" class="mono">—</div>
+          <div id="fw-watchdog" class="mono muted">启动回滚保险：—</div>
+          <button id="fw-btn" class="btn">选择固件包并升级</button>
+          <div class="fwbar"><div id="fw-fill"></div></div>
+          <div id="fw-status" class="mono muted">未开始</div>
+
+          <h2>在场船只</h2>
+          <pre id="ships" class="mono ships">（未发现）</pre>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="bundle.js"></script>
+  </body>
+</html>

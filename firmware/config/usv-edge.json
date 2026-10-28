@@ -1,0 +1,65 @@
+{
+  "_comment": "船端实机配置（Orange Pi Zero2W / H618）。与版本目录分离，OTA 升级不会覆盖。改完 systemctl restart usv-edge。",
+
+  "network": {
+    "bind": "0.0.0.0",
+    "port": 9527
+  },
+
+  "discovery": {
+    "enabled": true,
+    "udp_port": 9528,
+    "interval_ms": 1000,
+    "name": "USV-Edge"
+  },
+
+  "control": {
+    "freq_hz": 50,
+    "watchdog_ms": 300,
+    "require_arm": true,
+    "max_throttle_pct": 60,
+    "rudder_limit_deg": 30,
+    "servo_min_us": 1070,
+    "servo_mid_us": 1590,
+    "servo_max_us": 2110,
+    "servo_reverse": true,
+    "rt_priority": 1
+  },
+
+  "lidar": {
+    "enabled": true,
+    "port": "/dev/ttyUSB0",
+    "baud": 460800,
+    "max_points_per_scan": 1000,
+    "compress": true,
+    "mock_fallback": false
+  },
+
+  "ota": {
+    "enabled": true,
+    "port": 9530,
+    "dir": "/opt/usv",
+    "allow_unsigned": true,
+    "grace_ms": 30000
+  },
+
+  "hardware": {
+    "dry_run": false,
+    "pwm_chip": "/sys/class/pwm/pwmchip0",
+    "throttle_pwm": 1,
+    "rudder_pwm": 3,
+    "dir_fwd_gpio": 259,
+    "dir_rev_gpio": 260,
+    "led_gpio": 272,
+    "pwm_period_ns": 20000000
+  },
+
+  "ntp": {
+    "_comment": "开机联网校时。server 可改自建 NTP；bad_threshold_s 决定差多少秒算「时间不可信」",
+    "sync_on_boot": true,
+    "boot_delay_s": 15,
+    "server": "ntp.aliyun.com",
+    "timeout_ms": 3000,
+    "bad_threshold_s": 3600
+  }
+}

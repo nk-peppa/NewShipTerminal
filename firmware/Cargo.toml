@@ -1,0 +1,32 @@
+[package]
+name = "usv-edge"
+version = "0.4.0"
+edition = "2021"
+rust-version = "1.75"
+description = "USV edge firmware (protocol v1/v2, OTA)"
+license = "proprietary"
+
+[[bin]]
+name = "usv-edge"
+path = "src/main.rs"
+
+# No tokio on purpose: blocking IO + few threads covers all 5 streams,
+# fewer dependencies, lower idle cost. Also avoids windows-sys/dlltool
+# requirements of the GNU host toolchain.
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+sha2 = "0.10"
+hex = "0.4"
+tar = "0.4"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

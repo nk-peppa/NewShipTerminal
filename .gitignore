@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Node
+node_modules/
+npm-debug.log*
+*.tsbuildinfo
+
+# 构建产物
+dist/
+dist-test/
+build/
+out/
+release/
+target/
+bin/
+obj/
+.vite/
+.cache/
+
+# 运行时日志与录制数据
+*.log
+recordings/
+
+# 编辑器 / 系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

@@ -1,0 +1,14 @@
+* text=auto
+
+# 部署到 Linux 设备的脚本必须是 LF，否则 sh 会报 "Illegal option -"
+*.sh text eol=lf
+*.service text eol=lf
+*.py text eol=lf
+*.rs text eol=lf
+*.toml text eol=lf
+Cargo.lock text eol=lf
+
+# Windows 脚本必须是 CRLF，否则 cmd.exe 的 goto / 多行块可能解析失败
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.ps1 text eol=crlf

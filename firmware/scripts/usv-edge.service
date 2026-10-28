@@ -1,0 +1,29 @@
+[Unit]
+Description=USV Edge firmware (protocol v1/v2, OTA)
+Documentation=file:///opt/usv/README.md
+After=network-online.target
+Wants=network-online.target
+# 启动失败回滚：60 秒内起不来 4 次就判定为坏版本，交给 rollback 看门狗。
+# 注意 StartLimit* 必须写在 [Unit]（systemd >= 229 起放在 [Service] 会被忽略），
+# Ubuntu 20.04 是 systemd 245。
+StartLimitIntervalSec=60
+StartLimitBurst=4
+OnFailure=usv-edge-rollback.service
+
+[Service]
+Type=simple
+# 启动参数集中放在此文件，改完 systemctl restart usv-edge 生效
+EnvironmentFile=-/etc/default/usv-edge
+ExecStart=/opt/usv/current/usv-edge $USV_ARGS
+# 任何退出都自动拉起（OTA 切换版本后正是靠这个加载新二进制）
+Restart=always
+RestartSec=1
+# SIGTERM → 控制线程归零输出后退出
+KillSignal=SIGTERM
+TimeoutStopSec=5
+# SCHED_FIFO 在本机不可用（system.slice 的 cpu.rt_runtime_us = 0），
+# 固件会自动退回 nice -10；这里也把默认 nice 抬高，避免被普通任务抢占。
+Nice=-10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=USV Edge rollback watchdog
+Documentation=file:///opt/usv/README.md
+
+[Service]
+Type=oneshot
+# 由 usv-edge.service 的 OnFailure= 触发。这里刻意不设 Restart：
+# 回滚是一次性动作，失败就留日志等人工，不能自己反复重试。
+ExecStart=/opt/usv/bin/rollback.sh
