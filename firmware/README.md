@@ -40,19 +40,38 @@ systemctl restart usv-edge
 
 ## 打包与升级
 
-```sh
-sh scripts/make-package.sh     # 产出 dist/usv-edge-<ver>-aarch64.tar.gz + sha256
-```
+两种构建路径，产物格式完全一致（`usv-edge` 0755 + `manifest.json`）：
+
+| 在哪 | 命令 | 产物 |
+|---|---|---|
+| Windows（交叉编译） | `firmware\build-local.ps1` | `desktop\dist\firmware\usv-edge-<ver>-aarch64.tar.gz` |
+| Pi 上（本机编译） | `sh scripts/make-package.sh` | `firmware/dist/usv-edge-<ver>-aarch64.tar.gz` |
 
 然后在**客户端**「固件」卡片里选这个包上传，设备会完成
 校验 → 解包 → 切软链 → 重启 → 新版本握手。
+
+## 发布到 `release-fw` 分支
+
+Windows 上一条命令完成「编译 → 校验 → 提交 → 推送」：
+
+```powershell
+node firmware\tools\ship-fw.mjs              # 全流程
+node firmware\tools\ship-fw.mjs --dry        # 只构建 + 暂存，不碰 git
+node firmware\tools\ship-fw.mjs --skip-build # 复用现有包重新发布
+```
+
+脚本会做三件额外的检查：包内 `manifest.json` 的版本/架构与 `Cargo.toml` 一致、
+包内 `usv-edge` 有执行位（否则升级后 203/EXEC）、记录包与二进制的 sha256。
+
+分支上只保留最新一版；旧版用 `git show <commit>:<pkg> > <pkg>` 取回。
 
 ## 发布新版本
 
 1. 改 `Cargo.toml` 的 `version`
 2. `cargo test --release`（应 32 passed）
-3. `sh scripts/make-package.sh`
-4. 客户端上传；失败会自动回滚到上一版（`rollback.json` + 30s 未握手）
+3. `node firmware\tools\ship-fw.mjs`
+4. 客户端「固件」卡片里选包上传；失败会自动回滚到上一版
+   （`rollback.json` + 30s 未握手）
 
 ## 踩过的坑（务必保留这些约定）
 

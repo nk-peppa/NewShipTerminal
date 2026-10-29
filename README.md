@@ -27,9 +27,12 @@
 | 分支 | 内容 | 谁写 |
 |---|---|---|
 | `main` | 源码、测试、文档（唯一开发分支） | 所有人，经 PR 合并 |
-| `release` | **只放构建产物**（约 0.4 MB），orphan 分支 | 只有 `npm run ship` |
+| `release` | 客户端产物（约 0.4 MB），orphan 分支 | 只有 `npm run ship` |
+| `release-fw` | 固件 OTA 包（约 355 KB），orphan 分支 | 只有 `node firmware/tools/ship-fw.mjs` |
 
-`release` 是可直接运行的部署快照，目标机上不需要源码和构建工具：
+两条 release 分支都是**只读产物快照**，目标机不需要源码和构建工具。
+
+### 客户端
 
 ```powershell
 git clone -b release --single-branch https://github.com/nk-peppa/NewShipTerminal.git USV-Terminal
@@ -39,12 +42,32 @@ git clone -b release --single-branch https://github.com/nk-peppa/NewShipTerminal
 启动器会依次：检测/安装 Node.js 与 Git → 自检 Electron 依赖（含 npm 拦截
 postinstall 的兜底）→ 自动拉取 `release` 最新产物 → 启动。
 
-发布新版本（在 `main` 上）：
+发布（在 `main` 上）：
 
 ```powershell
 cd desktop
 npm run ship          # 要求工作区干净、测试全绿
 ```
 
-产物通过 `build-info.json` 记录来源 commit，可据此在 `main` 上反查源码。
+### 固件
+
+```powershell
+node firmware\tools\ship-fw.mjs              # 交叉编译 → 校验 → 提交 → 推送
+node firmware\tools\ship-fw.mjs --dry        # 只构建 + 暂存
+node firmware\tools\ship-fw.mjs --skip-build # 复用现有包重新发布
+```
+
+分支上只有 4 个文件：`build-info.json`、`usv-edge-<ver>-aarch64.tar.gz`、
+同名 `.sha256`、`README.txt`。只保留最新版，旧版靠 git history 取回：
+
+```sh
+git show <commit>:usv-edge-0.4.0-aarch64.tar.gz > usv-edge-0.4.0-aarch64.tar.gz
+```
+
+`build-info.json` 里的 `sha256` 用于校验传输完整性。注意固件目前**未签名**
+（设备配置 `allow_unsigned=true`），`sha256` 不能替代签名校验。
+
+两条分支的产物都通过 `build-info.json` 的 `sourceCommit` 记录来源，可据此在
+`main` 上反查源码。
+
 
