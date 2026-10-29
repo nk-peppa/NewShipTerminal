@@ -18,10 +18,14 @@ bin/
 obj/
 .vite/
 .cache/
+build-info.json
 
 # 运行时日志与录制数据
 *.log
 recordings/
+
+# 依赖安装戳（启动器写）
+.deps-ok
 
 # 编辑器 / 系统
 .vscode/

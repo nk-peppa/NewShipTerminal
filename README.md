@@ -21,3 +21,30 @@
 - 船端协议：[spec/protocol-v1.md](spec/protocol-v1.md)
 - 船端交接资料：[spec/handover-v1.md](spec/handover-v1.md)
 - 雷达数据手册：[docs/datasheets/SLAMTEC_rplidar_C1_v1.2_en.pdf](docs/datasheets/SLAMTEC_rplidar_C1_v1.2_en.pdf)
+
+## 分支与分发
+
+| 分支 | 内容 | 谁写 |
+|---|---|---|
+| `main` | 源码、测试、文档（唯一开发分支） | 所有人，经 PR 合并 |
+| `release` | **只放构建产物**（约 0.4 MB），orphan 分支 | 只有 `npm run ship` |
+
+`release` 是可直接运行的部署快照，目标机上不需要源码和构建工具：
+
+```powershell
+git clone -b release --single-branch https://github.com/nk-peppa/NewShipTerminal.git USV-Terminal
+# 之后双击 run-usv-terminal.cmd
+```
+
+启动器会依次：检测/安装 Node.js 与 Git → 自检 Electron 依赖（含 npm 拦截
+postinstall 的兜底）→ 自动拉取 `release` 最新产物 → 启动。
+
+发布新版本（在 `main` 上）：
+
+```powershell
+cd desktop
+npm run ship          # 要求工作区干净、测试全绿
+```
+
+产物通过 `build-info.json` 记录来源 commit，可据此在 `main` 上反查源码。
+

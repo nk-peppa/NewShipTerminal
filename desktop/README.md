@@ -10,6 +10,31 @@ SLAM 接入、后续录制回放都收在一个应用内。架构决策见 [docs
 
 仓库根目录另有 `run-usv-terminal.cmd`，与上面等价。
 
+## 启动器（`run-terminal.ps1`）
+
+真正的逻辑在 `run-terminal.ps1`，`.cmd` 只是薄壳（保持 ASCII，避免 cmd 代码页问题）。
+同一份脚本既跑开发树，也跑 `release` 分支的部署快照（后者没有 `src/`，跳过构建）。
+
+| 参数 | 作用 |
+|---|---|
+| `-Check` | 只体检不启动（退出码 0=可用 / 1=有硬性失败），适合排查「为什么起不来」 |
+| `-Sim` | 先拉起假船端再启动（等价于旧的 `run-sim.cmd`） |
+| `-Reinstall` | 强制重装 `node_modules` |
+| `-NoUpdate` | 跳过自动更新 |
+
+它做的五件事：
+
+1. **Node.js** —— 缺失时用 `winget` 装 LTS；装完当前会话 PATH 不刷新，脚本会按
+   `C:\Program Files\nodejs\` 显式探测。
+2. **Git 与自动更新** —— 只在当前分支是 `release` 时执行 `git reset --hard origin/release`；
+   开发树（`main`）直接跳过。失败一律非致命，继续启动。
+3. **依赖** —— `package-lock.json` 的 SHA256 与 `.deps-ok` 比对决定是否 `npm ci`。
+   ⚠️ npm 11 会拦 postinstall：`npm ci` 成功但 `electron.exe` 不存在，
+   脚本会自动补跑 `node node_modules/electron/install.js`，失败再切
+   `ELECTRON_MIRROR` 镜像重试。
+4. **构建** —— 仅开发树；`src/` 里有文件比 `dist/main/index.js` 新时自动 `npm run build`。
+5. **启动** —— 透传附加参数给 Electron。
+
 联调 / 无实船时用假船端：
 
 ```powershell
