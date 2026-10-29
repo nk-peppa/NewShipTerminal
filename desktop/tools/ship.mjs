@@ -121,7 +121,15 @@ log(`${info.version} @ ${info.sourceCommit.slice(0, 7)} (${info.sourceRef})`);
 const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-release-'));
 const skipPyc = (name) => name === '__pycache__' || name.endsWith('.pyc');
 
-copyTree(path.join(desktop, 'dist'), path.join(stage, 'dist'), (n) => n === 'firmware');
+// dist/firmware 是固件 OTA 包（不属于客户端），但 dist/main/firmware 是编译后的
+// OTA 模块必须保留 —— 所以只跳过 dist 顶层的 firmware，不能用全局目录名匹配。
+const distSrc = path.join(desktop, 'dist');
+const distDst = path.join(stage, 'dist');
+fs.mkdirSync(distDst, { recursive: true });
+for (const entry of fs.readdirSync(distSrc)) {
+  if (entry === 'firmware') continue;
+  copyTree(path.join(distSrc, entry), path.join(distDst, entry));
+}
 copyTree(path.join(desktop, 'tools', 'algo-sidecar.py'), path.join(stage, 'tools', 'algo-sidecar.py'));
 copyTree(path.join(desktop, 'algo', 'cocommand2d'), path.join(stage, 'algo', 'cocommand2d'), skipPyc);
 copyTree(path.join(desktop, 'run-terminal.ps1'), path.join(stage, 'run-terminal.ps1'));
