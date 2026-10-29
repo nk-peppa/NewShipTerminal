@@ -37,11 +37,13 @@ function log(msg) {
 
 function run(exe, args, opts = {}) {
   try {
-    return execFileSync(exe, args, {
+    const out = execFileSync(exe, args, {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
       ...opts,
-    }).trim();
+    });
+    // stdio 设为 inherit 时 execFileSync 返回 null
+    return out == null ? '' : String(out).trim();
   } catch (e) {
     const detail = (e.stderr || e.stdout || e.message || '').toString().trim();
     throw new Error(`${path.basename(exe)} ${args.join(' ')} 失败：${detail}`);
