@@ -6,7 +6,8 @@
     部署快照   release 分支根目录\run-terminal.ps1   无 src\，直接跑已构建的产物
 
   参数
-    -Check      只体检不启动（退出码 0=可用 / 1=有硬性失败）
+    -Check      只体检，不安装不修改（退出码 0=可用 / 1=有硬性失败）
+    -Fix        安装/修复依赖后退出，不启动
     -Sim        先拉起假船端再启动
     -Reinstall  强制重装 node_modules
     -NoUpdate   跳过自动更新
@@ -14,6 +15,7 @@
 [CmdletBinding()]
 param(
   [switch]$Check,
+  [switch]$Fix,
   [switch]$Sim,
   [switch]$Reinstall,
   [switch]$NoUpdate,
@@ -171,32 +173,44 @@ $stamp = ''
 if (Test-Path $stampFile) { $stamp = ((Get-Content $stampFile -Raw -ErrorAction SilentlyContinue) -join '').Trim() }
 
 $needInstall = $Reinstall -or (-not (Test-Path (Join-Path $appRoot 'node_modules'))) -or ($lockHash -and $lockHash -ne $stamp)
-if ($needInstall -and $npmExe) {
-  Write-Host '       npm ci ...' -ForegroundColor DarkGray
-  & $npmExe ci
-  if ($LASTEXITCODE -ne 0) { Warn 'npm ci 失败，尝试 npm install'; & $npmExe install }
-}
 
-# npm 11 会拦 postinstall：包已装好但 electron.exe 不存在
-if (-not (Test-Path $electronExe)) {
-  $installJs = Join-Path $appRoot 'node_modules\electron\install.js'
-  if (Test-Path $installJs) {
-    Warn 'electron 运行时缺失（npm 拦截了 postinstall），正在解压 ...'
-    & $nodeExe $installJs
-    if (-not (Test-Path $electronExe)) {
-      Warn '直连失败，改用镜像重试 ...'
-      $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+if ($Check) {
+  # 纯诊断：不落任何改动
+  if ($needInstall) { Warn '依赖未安装或已过期（启动时会自动 npm ci）' }
+  if (Test-Path $electronExe) {
+    $mb = [math]::Round((Get-Item $electronExe).Length / 1MB)
+    Ok "electron.exe ${mb} MB"
+  } else {
+    Warn 'electron 运行时未解压（启动时会自动补装）'
+  }
+} else {
+  if ($needInstall -and $npmExe) {
+    Write-Host '       npm ci ...' -ForegroundColor DarkGray
+    & $npmExe ci
+    if ($LASTEXITCODE -ne 0) { Warn 'npm ci 失败，尝试 npm install'; & $npmExe install }
+  }
+
+  # npm 11 会拦 postinstall：包已装好但 electron.exe 不存在
+  if (-not (Test-Path $electronExe)) {
+    $installJs = Join-Path $appRoot 'node_modules\electron\install.js'
+    if (Test-Path $installJs) {
+      Warn 'electron 运行时缺失（npm 拦截了 postinstall），正在解压 ...'
       & $nodeExe $installJs
+      if (-not (Test-Path $electronExe)) {
+        Warn '直连失败，改用镜像重试 ...'
+        $env:ELECTRON_MIRROR = 'https://npmmirror.com/mirrors/electron/'
+        & $nodeExe $installJs
+      }
     }
   }
-}
-if (Test-Path $electronExe) {
-  $mb = [math]::Round((Get-Item $electronExe).Length / 1MB)
-  Ok "electron.exe ${mb} MB"
-  if ($lockHash) { [System.IO.File]::WriteAllText($stampFile, $lockHash) }
-} else {
-  Fail 'electron 运行时不可用'
-  Note '手动执行：node node_modules\electron\install.js'
+  if (Test-Path $electronExe) {
+    $mb = [math]::Round((Get-Item $electronExe).Length / 1MB)
+    Ok "electron.exe ${mb} MB"
+    if ($lockHash) { [System.IO.File]::WriteAllText($stampFile, $lockHash) }
+  } else {
+    Fail 'electron 运行时不可用'
+    Note '手动执行：node node_modules\electron\install.js'
+  }
 }
 
 # ============ 4. 构建（仅开发树） ============
@@ -225,9 +239,10 @@ if (-not (Test-Path $srcDir)) {
 
 # ============ 5. 启动 ============
 Write-Host ''
-if ($Check) {
+if ($Check -or $Fix) {
   $verdict = if ($script:nFail -gt 0) { '不可用' } else { '可用' }
-  Write-Host "  体检：$verdict（$script:nOk 通过 / $script:nWarn 警告 / $script:nFail 失败）"
+  $mode = if ($Check) { '体检' } else { '修复' }
+  Write-Host "  ${mode}：$verdict（$script:nOk 通过 / $script:nWarn 警告 / $script:nFail 失败）"
   if ($script:nFail -gt 0) { exit 1 } else { exit 0 }
 }
 if ($script:nFail -gt 0) {
