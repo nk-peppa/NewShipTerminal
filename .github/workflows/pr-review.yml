@@ -47,5 +47,3 @@ jobs:
           # PR-Agent 用 DEEPSEEK.KEY 取 key；DEEPSEEK_API_KEY 供底层 LiteLLM 兜底
           DEEPSEEK.KEY: ${{ secrets.PR_AGENT_API_KEY }}
           DEEPSEEK_API_KEY: ${{ secrets.PR_AGENT_API_KEY }}
-          # 仅本分支有效：合入 main 后删除，配置应只从 main 读取
-          PR_AGENT_CONFIG_BRANCH: ${{ github.event.pull_request.head.ref == 'ci/deepseek-pr-review' && 'ci/deepseek-pr-review' || '' }}
