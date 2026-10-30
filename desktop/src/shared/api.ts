@@ -87,6 +87,11 @@ export interface PoseView {
   y: number;
   yaw: number;
   status: string;
+  /**
+   * 该位姿是否为当前估计。false 表示 SLAM 处于 LOST / DEGENERATE / WAITING，
+   * 坐标是上次可信位姿（或原点），不能当作当前定位结果。
+   */
+  poseValid?: boolean;
   /** 匹配残差（m），LOST 时为 null */
   rmse?: number | null;
   /** 内点率 0..1 */

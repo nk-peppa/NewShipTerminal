@@ -157,7 +157,7 @@ fs.writeFileSync(
     '',
     '依赖：',
     '  · Windows 10/11 x64',
-    '  · Python 3.9+ 且装有 numpy、scipy（仅 SLAM 侧车需要）',
+    '  · Python 3.10+ 且装有 numpy、scipy（仅 SLAM 侧车需要；3.9 不兼容）',
     '    缺依赖时界面「算法进程」显示异常，控制链路不受影响。',
     '',
     `构建时间：${info.builtAt}`,

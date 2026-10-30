@@ -46,7 +46,7 @@ export class AlgoSidecar extends EventEmitter {
     this.child = null;
   }
 
-  /** 清空 SLAM 状态：侧车重建实例，回到 INITIALIZED 之前的空白状态 */
+  /** 清空 SLAM 状态：侧车重建实例，回到 WAITING 的空白状态 */
   reset(): void {
     const child = this.child;
     if (!child || !child.stdin || child.stdin.destroyed) return;

@@ -18,6 +18,7 @@
 """
 
 import base64
+import hashlib
 import json
 import math
 import struct
@@ -28,6 +29,18 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 import numpy as np
+
+# vendor 包在类级注解里用了 PEP 604（X | None），需要 Python 3.10+。
+if sys.version_info < (3, 10):
+    sys.stdout.write(
+        json.dumps(
+            {"type": "error", "message": f"SLAM 需要 Python 3.10+，当前 {sys.version.split()[0]}"},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    sys.stdout.flush()
+    raise SystemExit(1)
 
 # 侧车同级的 algo/ 就是 vendor 进来的 cocommand2d
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "algo"))
@@ -99,7 +112,7 @@ class State:
         self.last_t = -1.0
         self.t_offset = 0.0
         self.last_map_at = 0.0
-        self.last_observed = -1
+        self.last_map_digest = None
 
 
 STATE = State()
@@ -151,6 +164,7 @@ def handle_scan(msg: Dict[str, Any]) -> None:
             "y": round(float(pose[1]), 4),
             "yaw": round(float(pose[2]), 5),
             "status": STATE.slam.status,
+            "poseValid": STATE.slam.status.startswith(("TRACKING", "INITIALIZING")),
             "rmse": finite(STATE.slam.rmse),
             "inlier": round(float(STATE.slam.inlier_ratio), 3),
             "scans": STATE.scans,
@@ -159,22 +173,30 @@ def handle_scan(msg: Dict[str, Any]) -> None:
     )
 
     now = time.monotonic()
-    observed = int(STATE.slam.grid.observed.sum())
-    if now - STATE.last_map_at >= MAP_PERIOD_S and observed != STATE.last_observed:
-        STATE.last_map_at = now
-        STATE.last_observed = observed
-        grid = STATE.slam.grid
-        data = base64.b64encode(png_rgba(grid_rgba(grid))).decode("ascii")
-        emit(
-            {
-                "type": "map",
-                "png": data,
-                "size": int(grid.size),
-                "resolution": float(grid.resolution),
-                "origin": [float(grid.origin[0]), float(grid.origin[1])],
-                "observed": observed,
-            }
-        )
+    grid = STATE.slam.grid
+    observed = int(grid.observed.sum())
+    # INITIALIZING（或启动失败）时栅格还是空的：按契约不发布地图，
+    # 也不占用限频窗口；reset 的清屏回执走 handle() 里单独的分支。
+    if observed and now - STATE.last_map_at >= MAP_PERIOD_S:
+        # 内容指纹：比较总量会在"证据在两个已观测格之间转移"时漏掉变化
+        # （例如 [3, -3] → [-3, 3]），这里直接对栅格与观测掩码取摘要，
+        # 只在 0.5 s 限频通过后才计算，开销约 1 ms。
+        digest = hashlib.blake2b(grid.log_odds.tobytes(), digest_size=8).digest()
+        digest += hashlib.blake2b(grid.observed.tobytes(), digest_size=8).digest()
+        if digest != STATE.last_map_digest:
+            STATE.last_map_at = now
+            STATE.last_map_digest = digest
+            data = base64.b64encode(png_rgba(grid_rgba(grid))).decode("ascii")
+            emit(
+                {
+                    "type": "map",
+                    "png": data,
+                    "size": int(grid.size),
+                    "resolution": float(grid.resolution),
+                    "origin": [float(grid.origin[0]), float(grid.origin[1])],
+                    "observed": observed,
+                }
+            )
 
 
 def handle(msg: Dict[str, Any]) -> None:
@@ -204,6 +226,7 @@ def handle(msg: Dict[str, Any]) -> None:
                 "y": 0.0,
                 "yaw": 0.0,
                 "status": "WAITING",
+                "poseValid": False,
                 "rmse": None,
                 "inlier": 0.0,
                 "scans": 0,
