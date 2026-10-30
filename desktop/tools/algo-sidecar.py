@@ -29,6 +29,18 @@ from typing import Any, Dict, Optional
 
 import numpy as np
 
+# vendor 包在类级注解里用了 PEP 604（X | None），需要 Python 3.10+。
+if sys.version_info < (3, 10):
+    sys.stdout.write(
+        json.dumps(
+            {"type": "error", "message": f"SLAM 需要 Python 3.10+，当前 {sys.version.split()[0]}"},
+            separators=(",", ":"),
+        )
+        + "\n"
+    )
+    sys.stdout.flush()
+    raise SystemExit(1)
+
 # 侧车同级的 algo/ 就是 vendor 进来的 cocommand2d
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "algo"))
 
@@ -99,7 +111,7 @@ class State:
         self.last_t = -1.0
         self.t_offset = 0.0
         self.last_map_at = 0.0
-        self.last_observed = -1
+        self.last_map_sig = None
 
 
 STATE = State()
@@ -160,10 +172,14 @@ def handle_scan(msg: Dict[str, Any]) -> None:
     )
 
     now = time.monotonic()
-    observed = int(STATE.slam.grid.observed.sum())
-    if now - STATE.last_map_at >= MAP_PERIOD_S and observed != STATE.last_observed:
+    grid = STATE.slam.grid
+    observed = int(grid.observed.sum())
+    # 只比较已观测格数不够：v2 首帧就把格子标记为 observed，但占据值要三帧确认才增加，
+    # 静止场景会停在"有格子、没墙"的首张快照上。把 log_odds 总量也算进签名。
+    signature = (observed, round(float(grid.log_odds.sum()), 1))
+    if now - STATE.last_map_at >= MAP_PERIOD_S and signature != STATE.last_map_sig:
         STATE.last_map_at = now
-        STATE.last_observed = observed
+        STATE.last_map_sig = signature
         grid = STATE.slam.grid
         data = base64.b64encode(png_rgba(grid_rgba(grid))).decode("ascii")
         emit(

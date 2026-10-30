@@ -92,7 +92,7 @@ const readme = [
   '',
   '依赖：',
   '  · Windows 10/11 x64',
-  '  · Python 3.9+ 且装有 numpy、scipy（SLAM 侧车用）',
+  '  · Python 3.10+ 且装有 numpy、scipy（SLAM 侧车用；3.9 不兼容）',
   '    缺依赖时界面右下「算法进程」会显示异常，控制链路不受影响。',
   '',
   '用法要点：',

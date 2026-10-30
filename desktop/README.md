@@ -135,7 +135,9 @@ release/USV-Terminal-<ver>-win32-x64.zip  分发用（约 151 MB）
   `algo/cocommand2d` 必须是真实文件，Python 读不了 asar。
 - 主进程只用 `electron` + node 内置模块，所以 `node_modules` 里除 `electron` 全部排除，
   包内 `node_modules` 是空的。
-- 运行前提：Windows 10/11 x64 + Python 3.9+ 且装好 `numpy`、`scipy`。
+- 运行前提：Windows 10/11 x64 + Python 3.10+ 且装好 `numpy`、`scipy`。
+  算法包使用了 PEP 604 注解（`X | None`），Python 3.9 会在导入阶段直接失败，
+  侧车会把原因写进「算法进程」状态，而不是静默重启。
   缺 Python 依赖时界面「算法进程」会显示异常，控制链路不受影响。
 - 压缩用系统自带的 `Compress-Archive`；路径经环境变量传给临时 `.ps1`，
   因为源码目录名里带单引号（`刘鸣艺's files`），拼进 `-Command` 会截断命令。
