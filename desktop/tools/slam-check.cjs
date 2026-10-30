@@ -61,8 +61,8 @@ async function main() {
 
   check('侧车启动并产出位姿', poses.length > 0, `${startupMs}ms 出首帧`);
   check(
-    '首帧状态为 INITIALIZED',
-    (poses[0]?.status ?? '').startsWith('INITIALIZED'),
+    '首帧状态为 INITIALIZING（3 帧确认）',
+    (poses[0]?.status ?? '').startsWith('INITIALIZING'),
     poses[0]?.status ?? '无',
   );
 
