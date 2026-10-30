@@ -13,9 +13,12 @@ permissions:
 
 concurrency:
   # 必须带上 event_name：PR 上任何评论都会触发一次 issue_comment 运行（随后被 if 跳过），
-  # 若共用同一个 group，它会 cancel 掉正在跑的审查
-  group: pr-agent-${{ github.event_name }}-${{ github.event.pull_request.number || github.event.issue.number }}
-  cancel-in-progress: true
+  # 若共用同一个 group，它会 cancel 掉正在跑的审查。
+  # 命令型运行再按 comment id 分开：同一 group 内只保留一个排队任务，
+  # 否则后到的普通评论会把排队的 /review 顶掉。
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}-${{ github.event_name }}-${{ github.event.comment.id || 'push' }}
+  # 只有 push 触发的审查才抢占；命令型运行排队，避免一条普通评论取消掉 /review
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   review:
