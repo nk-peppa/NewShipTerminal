@@ -280,13 +280,21 @@ export class SlamMapView {
       ctx.save();
       ctx.translate(bx, by);
       ctx.rotate(hd);
-      ctx.fillStyle = this.poseColor();
       ctx.beginPath();
       ctx.moveTo(L, 0);
       ctx.lineTo(-W * 0.7, W * 0.62);
       ctx.lineTo(-W * 0.7, -W * 0.62);
       ctx.closePath();
-      ctx.fill();
+      ctx.fillStyle = this.poseColor();
+      if (this.pose.poseValid === false) {
+        // 保持位姿不是当前定位结果：只画虚线轮廓，避免看起来像实时位置
+        ctx.strokeStyle = this.poseColor();
+        ctx.lineWidth = 1.5 * dpr;
+        ctx.setLineDash([3 * dpr, 3 * dpr]);
+        ctx.stroke();
+      } else {
+        ctx.fill();
+      }
       ctx.restore();
     }
 

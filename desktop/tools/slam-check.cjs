@@ -81,6 +81,7 @@ async function main() {
 
   check('持续产出位姿（≈10Hz）', poses.length > 70, `${poses.length} 帧 / 10.8s`);
   check('最终状态 TRACKING', (last?.status ?? '').startsWith('TRACKING'), last?.status ?? '无');
+  check('末帧位姿标记为有效', last?.poseValid === true, String(last?.poseValid));
   check('内点率 > 0.5', (last?.inlier ?? 0) > 0.5, `${((last?.inlier ?? 0) * 100).toFixed(0)}%`);
   check('匹配残差 < 5cm', (last?.rmse ?? 1) < 0.05, `${(((last?.rmse ?? 1) / 100) * 100).toFixed(2)}cm`);
   check(
