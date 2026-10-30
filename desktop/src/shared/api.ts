@@ -160,6 +160,10 @@ export interface LogStatusView {
   bytes: number;
   events: number;
   statusRows: number;
+  /** STATUS 船钟跳变次数：>0 表示现场确实丢了 50Hz 帧 */
+  statusGaps: number;
+  /** 最大一次 STATUS 船钟间隔（ms），正常 50Hz 约 20 */
+  maxStatusGapMs: number;
   cmdRows: number;
   /** 渲染进程上报的原始指令行数 */
   uiRows: number;

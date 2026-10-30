@@ -20,7 +20,7 @@
 ```
 ┌──────────────────── Renderer (Chromium) ────────────────────┐
 │  UI：PPI 雷达 / 仪表 / 地图 / 设置                            │
-│  · 30Hz 下发归一化指令（兼心跳）                              │
+│  · ~31Hz 下发归一化指令（定时器驱动，不依赖 rAF）              │
 │  · 60fps 绘制，只读订阅，绝不直接持有 socket                   │
 └───────────────▲──────────────────────────┬──────────────────┘
                 │ contextBridge（白名单）   │ 二进制 TypedArray
@@ -79,7 +79,7 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 
 | 通道 | 方向 | 频率 | 内容 |
 |---|---|---|---|
-| `ui:cmd` | 渲染 → 主 | 30Hz | `{throttle, rudder}` 归一化 −1..1 |
+| `ui:cmd` | 渲染 → 主 | ~31Hz | `{throttle, rudder}` 归一化 −1..1；**定时器驱动**（`setInterval` + `backgroundThrottling:false`），窗口最小化时也不断流 |
 | `ui:arm` / `ui:estop` | 渲染 → 主 | 事件 | 布尔 |
 | `evt:status` | 主 → 渲染 | 20Hz | `StatusView` |
 | `evt:scan` | 主 → 渲染 | ~10Hz | `ScanView`（TypedArray） |
@@ -105,7 +105,7 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 | 层 | 机制 | 参数 |
 |---|---|---|
 | UI | 摇杆回中才允许解锁；切后台/关闭前补发归零 | 阈值 0.15 |
-| Main | Supervisor：未解锁 / 急停 / UI 超时 → 归零且不带 ARM 位 | `uiTimeoutMs = 500` |
+| Main | Supervisor：未解锁 / 急停 / UI 超时 → 归零且不带 ARM 位 | `uiTimeoutMs = 500`（UI 心跳 ~31Hz，窗口最小化也不断） |
 | Main | 退出前保持连接 600ms，连续发安全帧 | 0.6s |
 | 链路 | 断线自动重连；断线期间不写 socket | 2s 退避 |
 | 船端 | 300ms 看门狗 → 油门 0 + 舵回中 | 固件参数 |

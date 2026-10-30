@@ -218,6 +218,8 @@ export interface SessionLoggerOptions {
   keepSessions?: number;
   /** 原始流单文件上限（字节），默认 128 MiB；<=0 表示不分片 */
   rawPartBytes?: number;
+  /** STATUS 船钟间隔超过该值就记为一次缺口（ms），默认 100（50Hz 的 5 拍） */
+  statusGapMs?: number;
   now?: () => number;
 }
 
@@ -243,6 +245,10 @@ export interface LogStats {
   bytes: number;
   events: number;
   statusRows: number;
+  /** STATUS 之间船钟跳变超过 statusGapMs 的次数（>0 说明现场丢了 50Hz 帧） */
+  statusGaps: number;
+  /** 相邻 STATUS 的最大船钟间隔；正常 50Hz 约 20ms，>100ms 即丢帧 */
+  maxStatusGapMs: number;
   cmdRows: number;
   uiRows: number;
   scanRows: number;
@@ -279,9 +285,15 @@ export class SessionLogger {
   private failure: string | null = null;
   private closed = false;
 
+  private readonly statusGapMs: number;
+  private lastStatusBoatMs: number | null = null;
+  private statusGapCount = 0;
+  private maxStatusGapMs = 0;
+
   constructor(opts: SessionLoggerOptions) {
     this.now = opts.now ?? Date.now;
     this.startedAt = this.now();
+    this.statusGapMs = opts.statusGapMs ?? 100;
 
     this.dir = createSessionDir(opts.baseDir, new Date(this.startedAt));
     const rawPartBytes = opts.rawPartBytes ?? DEFAULT_RAW_PART_BYTES;
@@ -371,12 +383,15 @@ export class SessionLogger {
   }
 
   event(level: LogLevel, type: string, data?: Record<string, unknown>): void {
-    this.guard(() => {
-      const rec: Record<string, unknown> = { ...(data ?? {}), t: this.now(), level, type };
-      this.append(this.eventFd, `${JSON.stringify(rec)}\n`);
-      this.eventCount++;
-      if (level === 'error') this.errorCount++;
-    });
+    this.guard(() => this.appendEvent(level, type, data));
+  }
+
+  /** 已经处在 guard 内部时直接写，不再嵌套 try/catch */
+  private appendEvent(level: LogLevel, type: string, data?: Record<string, unknown>): void {
+    const rec: Record<string, unknown> = { ...(data ?? {}), t: this.now(), level, type };
+    this.append(this.eventFd, `${JSON.stringify(rec)}\n`);
+    this.eventCount++;
+    if (level === 'error') this.errorCount++;
   }
 
   warn(type: string, data?: Record<string, unknown>): void {
@@ -389,6 +404,24 @@ export class SessionLogger {
 
   status(st: Status, atMs = this.now()): void {
     this.guard(() => {
+      // 船钟连续性自检：50Hz 时相邻两帧应相距 ~20ms，跳变说明现场丢了帧。
+      // 船端重启会让 timeMs 归零，按「重置」而不是缺口处理。
+      const prev = this.lastStatusBoatMs;
+      if (prev !== null) {
+        if (st.timeMs < prev) {
+          this.appendEvent('info', 'status-time-reset', { prevMs: prev, boatMs: st.timeMs });
+        } else {
+          const gap = st.timeMs - prev;
+          // 最大值按真实间隔统计（正常 50Hz 约 20ms），缺口只在超过阈值时计数
+          if (gap > this.maxStatusGapMs) this.maxStatusGapMs = gap;
+          if (gap > this.statusGapMs) {
+            this.statusGapCount++;
+            this.appendEvent('warn', 'status-gap', { gapMs: gap, boatMs: st.timeMs });
+          }
+        }
+      }
+      this.lastStatusBoatMs = st.timeMs;
+
       const f = st.flags;
       const row = [
         atMs,
@@ -509,6 +542,8 @@ export class SessionLogger {
       bytes: this.ownBytes + this.rx.bytes + this.tx.bytes,
       events: this.eventCount,
       statusRows: this.statusCount,
+      statusGaps: this.statusGapCount,
+      maxStatusGapMs: this.maxStatusGapMs,
       cmdRows: this.cmdCount,
       uiRows: this.uiCount,
       scanRows: this.scanCount,

@@ -129,6 +129,8 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
     bytes: 0,
     events: 0,
     statusRows: 0,
+    statusGaps: 0,
+    maxStatusGapMs: 0,
     cmdRows: 0,
     uiRows: 0,
     scanRows: 0,

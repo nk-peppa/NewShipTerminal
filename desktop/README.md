@@ -47,8 +47,9 @@ npm start         # 另开一格
 开发自检：
 
 ```powershell
-npm test          # 协议黄金帧 / CRC / 分片 / zlib + 会话日志格式（12 项）
-npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超时归零 + 日志落盘（17 项）
+npm test          # 协议黄金帧 / CRC / 分片 / zlib + 会话日志格式（18 项）
+npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超时归零 + 日志落盘（18 项）
+npm run log:50hz  # 真 50Hz 突发压力：收帧 = CSV 行 = 原始流帧，零丢帧（7 项）
 ```
 
 > npm 11 会拦截 postinstall。若 `node_modules\electron\dist\electron.exe` 不存在：
@@ -89,9 +90,11 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 | 项 | 结果 |
 |---|---|
 | 协议单测 | 7/7 通过（含 `protocol.md` 黄金帧） |
-| 会话日志单测 | 5/5 通过（CSV/JSONL 内容、原始流分片、保留策略、ZIP 结构 + CRC） |
-| 端到端自检 | 17/17 通过（原 12 项 + STATUS/CMD/SCAN 全量落盘、原始流可还原且 CRC 0） |
-| 日志 ZIP 实导 | 经 PowerShell `Expand-Archive` 反向验证：11 个文件、164 帧原始数据可还原 |
+| 会话日志单测 | 6/6 通过（CSV/JSONL 内容、船钟缺口识别、原始流分片、保留策略、ZIP 结构 + CRC） |
+| 端到端自检 | 18/18 通过（含 STATUS/CMD/SCAN 全量落盘、船钟无缺口、原始流可还原且 CRC 0） |
+| 50Hz 完整性 | 7/7 通过：490 帧收发 1:1、CSV 行数 = 原始流帧数、最大间隔 20ms |
+| 10 分钟满 session | 内存 407–440MB 无泄漏，日志 15.5MB，0 错误；离线回放 5540 帧 TRACKING |
+| 日志 ZIP 实导 | 经 PowerShell `Expand-Archive` 反向验证：11 个文件、原始帧可还原 |
 | SLAM 导出 | 22/22 通过（真仿真 + 真侧车，ZIP 经 `Expand-Archive` 反向验证） |
 | UI 实跑 | 假船端 450 点 @9.2 圈/s，雷达 PPI、状态卡、SLAM 位姿均正常 |
 | Python 侧车 | `TRACKING`，累计处理 18 圈，重启 0 次 |
@@ -145,7 +148,7 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 | `client.jsonl` | 运行事件：链路状态 1Hz、UI 解锁/急停、OTA、算法健康与 stderr、异常 |
 | `status.csv` | 船端 STATUS 全量 **50Hz**（不受 UI 20Hz 限速影响），含 boat_ms 与全部标志位 |
 | `cmd.csv` | 实际下发 CMD 全量 50Hz（含最终油门/舵角与 ARM/ESTOP 位） |
-| `ui.csv` | 渲染进程原始指令 30Hz（归一化 −1..1，未过安全阀，用于区分「没操作」与「被归零」） |
+| `ui.csv` | 渲染进程原始指令 ~31Hz（归一化 −1..1，未过安全阀，用于区分「没操作」与「被归零」） |
 | `scan.csv` | 每圈点云摘要：点数、编码、质量上限、最小/最大距离、圈号与圈率 |
 | `pose.csv` | SLAM 位姿 ~10Hz（x/y/yaw、status、rmse、inlier） |
 | `rx.NNN.bin` | 收到的**原始 TCP 字节流**（连解码失败的帧也原样保留） |
@@ -180,7 +183,11 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
   先写 `.part` 再改名，失败不留半截文件。
 - 保存/导出对话框打开期间与 SLAM 保存相同：摇杆被忽略、油门舵角归零。
 - 日志模块不依赖 Electron，`npm test` 直接覆盖格式与 ZIP；`npm run smoke`
-  额外验证真实链路 ⇄ 日志落盘。
+  额外验证真实链路 ⇄ 日志落盘；`npm run log:50hz` 用真 50Hz 突发证明
+  「收帧 = CSV 行 = 原始流帧」，一帧不丢。
+- 50Hz 数据由**主进程**逐帧落盘，与渲染进程刷新率、窗口是否最小化无关；
+  `status.csv` 还会做船钟连续性自检，出现缺口会在面板上变成警示色并写入
+  `client.jsonl` 的 `status-gap` 事件。
 
 拿这批数据怎么用：
 

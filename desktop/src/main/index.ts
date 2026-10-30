@@ -111,6 +111,11 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      // 窗口被遮挡/最小化时 Chromium 会把 rAF 降到 ~1Hz，30Hz 指令心跳随之断流，
+      // Supervisor 的 500ms UI 超时会误判为「UI 卡死」而撤防停车。操作员只是
+      // 切了个窗口而已，因此关闭后台节流。安全兜底仍由摇杆回中、ESTOP 与船端
+      // 300ms 看门狗负责。
+      backgroundThrottling: false,
     },
   });
   // 锁死 16:9（用户拖边框时按比例缩放；最大化/贴边由系统处理）

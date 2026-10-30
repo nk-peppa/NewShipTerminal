@@ -332,9 +332,16 @@ function pollMapPad(dtMs: number): void {
 
 /* ---------------- 指令下发（30Hz 兼心跳） ---------------- */
 
+/**
+ * 心跳必须独立于渲染循环：窗口最小化时 Chromium 会停掉 requestAnimationFrame，
+ * 若把指令挂在 rAF 上，30Hz 心跳就断了，Supervisor 的 500ms UI 超时会把人
+ * 误判成「UI 卡死」而撤防。setInterval + backgroundThrottling:false 才能持续。
+ */
 function sendLoop(): void {
   const now = Date.now();
-  if (now - state.lastSend >= 33) {
+  // 门限 20ms：Windows 定时器粒度 15.6ms，16ms 的 tick 落在 31.2ms 上，
+  // 门限若取 33ms 就会漏到下一拍（46.8ms ≈ 21Hz）；20ms 能稳定在 ~32Hz。
+  if (now - state.lastSend >= 20) {
     state.lastSend = now;
     window.usv.sendCmd(padThrottle, padRudder);
   }
@@ -347,8 +354,6 @@ function drawLoop(): void {
   const dtMs = state.lastFrameAt ? now - state.lastFrameAt : 16;
   state.lastFrameAt = now;
 
-  pollPad();
-  sendLoop();
   pollMapPad(dtMs);
 
   const r = fitCanvas(el.canvas, el.radarWrap);
@@ -836,10 +841,13 @@ async function refreshLog(): Promise<void> {
       el.logInfo.className = 'mono muted';
       return;
     }
-    el.logInfo.className = 'mono muted';
+    // 丢帧在面板上直接变成警示色：这比事后翻日志更早发现问题
+    const lossy = s.statusGaps > 0;
+    el.logInfo.className = `mono ${lossy ? 't-warn' : 'muted'}`;
     el.logInfo.textContent =
       `记录中 ${fmtDuration(s.durationMs)} · ${fmtBytes(s.bytes)} · ` +
-      `STATUS ${s.statusRows} · 点云 ${s.scanRows} 圈 · 位姿 ${s.poseRows} · 事件 ${s.events}`;
+      `STATUS ${s.statusRows} · 点云 ${s.scanRows} 圈 · 位姿 ${s.poseRows} · 事件 ${s.events}` +
+      (lossy ? ` · 丢帧 ${s.statusGaps} 次（最长 ${s.maxStatusGapMs} ms）` : '');
   } catch {
     el.logInfo.textContent = '日志状态读取失败';
     el.logInfo.className = 'mono t-bad';
@@ -892,4 +900,9 @@ window.usv.getConfig().then((cfg) => {
   el.ships.dataset.algo = String(cfg.algo.enabled);
 });
 
+// 手柄采样与指令心跳走定时器（最小化/遮挡时也照常跑），渲染才走 rAF
+window.setInterval(() => {
+  pollPad();
+  sendLoop();
+}, 16);
 requestAnimationFrame(drawLoop);

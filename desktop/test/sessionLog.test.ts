@@ -156,6 +156,48 @@ test('会话日志：STATUS / CMD / SCAN / POSE CSV 与事件 JSONL', () => {
   fs.rmSync(base, { recursive: true, force: true });
 });
 
+test('会话日志：STATUS 船钟缺口与船端重启识别', () => {
+  const base = tempBase();
+  const t = 1_790_000_000_000;
+  const log = new SessionLogger({ baseDir: base, now: () => t, statusGapMs: 100 });
+  try {
+    // 50Hz 连续 5 帧：不应记缺口，最大间隔就是 20ms
+    for (let i = 0; i < 5; i++) log.status({ ...STATUS, timeMs: 1000 + i * 20 });
+    assert.equal(log.stats().statusGaps, 0);
+    assert.equal(log.stats().maxStatusGapMs, 20);
+
+    // 1080 → 1220：跳了 140ms（50Hz 下丢了 6 帧）
+    log.status({ ...STATUS, timeMs: 1220 });
+    assert.equal(log.stats().statusGaps, 1);
+    assert.equal(log.stats().maxStatusGapMs, 140);
+
+    // 再跳 500ms
+    log.status({ ...STATUS, timeMs: 1720 });
+    assert.equal(log.stats().statusGaps, 2);
+    assert.equal(log.stats().maxStatusGapMs, 500);
+
+    // 船端重启：timeMs 归零不算缺口，但要留事件
+    log.status({ ...STATUS, timeMs: 0 });
+    log.status({ ...STATUS, timeMs: 20 });
+    assert.equal(log.stats().statusGaps, 2);
+
+    const events = readJsonl(path.join(log.dir, 'client.jsonl'));
+    const gaps = events.filter((e) => e.type === 'status-gap');
+    assert.equal(gaps.length, 2);
+    assert.deepEqual(
+      gaps.map((e) => [e.gapMs, e.boatMs]),
+      [
+        [140, 1220],
+        [500, 1720],
+      ],
+    );
+    assert.equal(events.filter((e) => e.type === 'status-time-reset').length, 1);
+  } finally {
+    log.close('test');
+  }
+  fs.rmSync(base, { recursive: true, force: true });
+});
+
 test('会话日志：原始流记录格式与分片', () => {
   const base = tempBase();
   const t = 1_790_000_000_000;

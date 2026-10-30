@@ -129,6 +129,11 @@ async function main() {
     `rows=${logStats.scanRows}`,
   );
   check('日志事件 JSONL 存在', fs.existsSync(path.join(log.dir, 'client.jsonl')));
+  check(
+    'STATUS 无丢帧（船钟连续）',
+    logStats.statusGaps === 0,
+    `gaps=${logStats.statusGaps} max=${logStats.maxStatusGapMs}ms`,
+  );
 
   // 原始流反向还原：FrameParser 吃回去不能有 CRC 错
   const parser = new FrameParser();
