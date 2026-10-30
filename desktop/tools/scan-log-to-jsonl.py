@@ -34,6 +34,7 @@ T_SCAN = 0x82
 T_SCAN2 = 0x85
 FRAME_HEADER = 8  # AA 55 | ver u8 | type u8 | seq u16 | len u16
 RECORD_HEADER = 12  # u32 长度 | f64 epoch 毫秒
+MAX_PAYLOAD = 8192  # 与 src/shared/protocol.ts 的 MAX_PAYLOAD 保持一致
 
 
 def crc16(data: bytes, crc: int = 0xFFFF) -> int:
@@ -80,6 +81,11 @@ def parse_frames(records, stats):
             if len(buf) < FRAME_HEADER:
                 break
             length = buf[6] | (buf[7] << 8)
+            if length > MAX_PAYLOAD:
+                # 损坏的帧头可能声明一个永远等不到的长度，直接滑过重新找帧头
+                stats["oversized"] += 1
+                del buf[:1]
+                continue
             end = FRAME_HEADER + length
             if len(buf) < end + 2:
                 break
@@ -129,18 +135,26 @@ def decode_scan2(payload: bytes):
 
 
 class Clock:
-    """船端时钟可能回退或归零；发现回退就整体加偏移，保持严格递增。"""
+    """船端时钟可能回退或归零；发现回退就整体加偏移，保持严格递增。
+
+    时基在第一次调用时确定，之后不再切换：设备时间 0 是合法值（刚开机），
+    不能因为它就改用 epoch 到达时间，否则会产生十亿秒级的向前跳变，
+    让已初始化的地图因 max_tracking_gap 直接丢失跟踪。
+    """
 
     def __init__(self) -> None:
         self.last = None
         self.offset = 0.0
+        self.use_device = None
 
     def seconds(self, time_ms: int, arrival_ms: float) -> float:
-        base = (time_ms if time_ms > 0 else arrival_ms) / 1000.0
-        value = base + self.offset
+        if self.use_device is None:
+            self.use_device = time_ms > 0
+        base_ms = time_ms if self.use_device else arrival_ms
+        value = base_ms / 1000.0 + self.offset
         if self.last is not None and value <= self.last:
             self.offset += (self.last - value) + 0.001
-            value = base + self.offset
+            value = base_ms / 1000.0 + self.offset
         self.last = value
         return value
 
@@ -163,7 +177,14 @@ def main(argv=None) -> int:
         return 2
 
     output = Path(args.output) if args.output else paths[0].parent / "scans.jsonl"
-    stats = {"frames": 0, "crc_errors": 0, "dropped_bytes": 0, "bad_scans": 0, "rejected": 0}
+    stats = {
+        "frames": 0,
+        "crc_errors": 0,
+        "oversized": 0,
+        "dropped_bytes": 0,
+        "bad_scans": 0,
+        "rejected": 0,
+    }
     clock = Clock()
     scans = scan2 = written = 0
 
@@ -193,8 +214,9 @@ def main(argv=None) -> int:
 
     print(
         f"rx 分片 {len(paths)} 个；帧 {stats['frames']}（SCAN {scans} / SCAN2 {scan2}）；"
-        f"CRC 错误 {stats['crc_errors']}；丢弃字节 {stats['dropped_bytes']}；"
-        f"坏扫描 {stats['bad_scans']}；越界拒绝 {stats['rejected']}",
+        f"CRC 错误 {stats['crc_errors']}；超长声明 {stats['oversized']}；"
+        f"丢弃字节 {stats['dropped_bytes']}；坏扫描 {stats['bad_scans']}；"
+        f"越界拒绝 {stats['rejected']}",
         file=sys.stderr,
     )
     print(f"写出 {written} 帧 → {output}", file=sys.stderr)

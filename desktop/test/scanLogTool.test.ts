@@ -124,3 +124,41 @@ test('扫描日志转 JSONL：跨记录重分帧、坏 CRC 丢弃、SCAN2 兼容
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('时钟归零不切时基，超长声明不阻塞后续帧', { skip: !pythonReady && 'python + numpy 不可用' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-scanlog-clock-'));
+  const before = buildFrame(T_SCAN, 1, scanPayload(1000));
+  // 损坏帧头声明 65535 字节：不能一直等下去，否则后面的合法帧会被静默吞掉
+  const oversized = Buffer.from([0xaa, 0x55, 0x01, T_SCAN, 0x00, 0x00, 0xff, 0xff]);
+  const zero = buildFrame(T_SCAN, 2, scanPayload(0)); // 船端时钟归零
+  const after = buildFrame(T_SCAN, 3, scanPayload(100));
+  fs.writeFileSync(
+    path.join(dir, 'rx.000.bin'),
+    // 到达时间是真实的 epoch 毫秒：只有这样才能暴露"归零后切到 epoch 时基"的缺陷
+    record(1_760_000_000_000, Buffer.concat([before, oversized, zero, after])),
+  );
+
+  const out = path.join(dir, 'scans.jsonl');
+  const run = spawnSync(
+    python,
+    [path.join(desktopRoot, 'tools', 'scan-log-to-jsonl.py'), '--session', dir, '--output', out],
+    { encoding: 'utf8' },
+  );
+  assert.equal(run.status, 0, run.stderr);
+
+  const parsed = fs
+    .readFileSync(out, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => JSON.parse(line) as ScanLine);
+  assert.equal(parsed.length, 3, '超长声明之后的两帧必须解出来');
+
+  const stamps = parsed.map((item) => item.timestamp);
+  for (let i = 1; i < stamps.length; i++) {
+    assert.ok((stamps[i] ?? 0) > (stamps[i - 1] ?? 0), `时间戳必须严格递增: ${stamps.join(',')}`);
+  }
+  const span = (stamps[stamps.length - 1] ?? 0) - (stamps[0] ?? 0);
+  assert.ok(span < 1, `时钟归零不能切到 epoch 时基（跨度 ${span}s）`);
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
