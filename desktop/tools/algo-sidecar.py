@@ -18,6 +18,7 @@
 """
 
 import base64
+import hashlib
 import json
 import math
 import struct
@@ -111,7 +112,7 @@ class State:
         self.last_t = -1.0
         self.t_offset = 0.0
         self.last_map_at = 0.0
-        self.last_map_sig = None
+        self.last_map_digest = None
 
 
 STATE = State()
@@ -173,25 +174,27 @@ def handle_scan(msg: Dict[str, Any]) -> None:
 
     now = time.monotonic()
     grid = STATE.slam.grid
-    observed = int(grid.observed.sum())
-    # 只比较已观测格数不够：v2 首帧就把格子标记为 observed，但占据值要三帧确认才增加，
-    # 静止场景会停在"有格子、没墙"的首张快照上。把 log_odds 总量也算进签名。
-    signature = (observed, round(float(grid.log_odds.sum()), 1))
-    if now - STATE.last_map_at >= MAP_PERIOD_S and signature != STATE.last_map_sig:
-        STATE.last_map_at = now
-        STATE.last_map_sig = signature
-        grid = STATE.slam.grid
-        data = base64.b64encode(png_rgba(grid_rgba(grid))).decode("ascii")
-        emit(
-            {
-                "type": "map",
-                "png": data,
-                "size": int(grid.size),
-                "resolution": float(grid.resolution),
-                "origin": [float(grid.origin[0]), float(grid.origin[1])],
-                "observed": observed,
-            }
-        )
+    if now - STATE.last_map_at >= MAP_PERIOD_S:
+        # 内容指纹：比较总量会在"证据在两个已观测格之间转移"时漏掉变化
+        # （例如 [3, -3] → [-3, 3]），这里直接对栅格与观测掩码取摘要，
+        # 只在 0.5 s 限频通过后才计算，开销约 1 ms。
+        digest = hashlib.blake2b(grid.log_odds.tobytes(), digest_size=8).digest()
+        digest += hashlib.blake2b(grid.observed.tobytes(), digest_size=8).digest()
+        if digest != STATE.last_map_digest:
+            STATE.last_map_at = now
+            STATE.last_map_digest = digest
+            observed = int(grid.observed.sum())
+            data = base64.b64encode(png_rgba(grid_rgba(grid))).decode("ascii")
+            emit(
+                {
+                    "type": "map",
+                    "png": data,
+                    "size": int(grid.size),
+                    "resolution": float(grid.resolution),
+                    "origin": [float(grid.origin[0]), float(grid.origin[1])],
+                    "observed": observed,
+                }
+            )
 
 
 def handle(msg: Dict[str, Any]) -> None:
