@@ -1,0 +1,51 @@
+name: PR Review (DeepSeek)
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # 同仓库 PR + 非草稿 + 无 skip-ai-review 标签时自动审查；
+    # PR 里以 / 开头的评论（如 /review、/describe、/ask）按需触发。
+    # 来自 fork 的 PR 拿不到 secret，直接跳过。
+    if: >
+      github.event.sender.type != 'Bot' &&
+      (
+        (github.event_name == 'issue_comment' &&
+         github.event.issue.pull_request &&
+         startsWith(github.event.comment.body, '/') &&
+         contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)) ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.draft == false &&
+         github.event.pull_request.head.repo.full_name == github.repository &&
+         !contains(github.event.pull_request.labels.*.name, 'skip-ai-review'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # 检出仓库，供 PR-Agent 读取仓库内文件作为审查上下文
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 固定到 commit SHA（v0.49.0）：tag 可被上游移动，SHA 不能
+      - name: Run PR-Agent
+        uses: the-pr-agent/pr-agent@efdde4afe14aa401a3889012c7f3e9ef3081a430
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PR-Agent 用 DEEPSEEK.KEY 取 key；DEEPSEEK_API_KEY 供底层 LiteLLM 兜底
+          DEEPSEEK.KEY: ${{ secrets.PR_AGENT_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.PR_AGENT_API_KEY }}
+          # 仅本分支有效：合入 main 后删除，配置应只从 main 读取
+          PR_AGENT_CONFIG_BRANCH: ${{ github.event.pull_request.head.ref == 'ci/deepseek-pr-review' && 'ci/deepseek-pr-review' || '' }}
