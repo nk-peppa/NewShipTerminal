@@ -174,9 +174,13 @@ class WireStream {
   }
 
   private nextPart(): void {
-    if (this.fd !== null) {
+    // 先把旧 fd 置空再关：open 失败时若还留着已关闭的编号，
+    // 下一次 write 会往一个可能已被别的组件复用的句柄上写
+    const old = this.fd;
+    this.fd = null;
+    if (old !== null) {
       try {
-        fs.closeSync(this.fd);
+        fs.closeSync(old);
       } catch {
         /* 忽略关闭失败 */
       }
@@ -310,14 +314,46 @@ export class SessionLogger {
     this.writeInitial('meta.json', `${JSON.stringify(meta, null, 2)}\n`);
     this.writeInitial('README.txt', README_TEXT);
 
-    this.statusFd = this.openCsv('status.csv', STATUS_CSV_HEADER);
-    this.cmdFd = this.openCsv('cmd.csv', CMD_CSV_HEADER);
-    this.uiFd = this.openCsv('ui.csv', UI_CSV_HEADER);
-    this.scanFd = this.openCsv('scan.csv', SCAN_CSV_HEADER);
-    this.poseFd = this.openCsv('pose.csv', POSE_CSV_HEADER);
-    this.eventFd = fs.openSync(path.join(this.dir, 'client.jsonl'), 'a');
-    this.rx = new WireStream(this.dir, 'rx', rawPartBytes);
-    this.tx = new WireStream(this.dir, 'tx', rawPartBytes);
+    // 中途失败（磁盘满、目录被占）要把已经打开的句柄全部关掉：构造函数没返回，
+    // 调用方拿不到 logger，这些 fd 就再也没人关了
+    const opened: number[] = [];
+    let rx: WireStream | null = null;
+    try {
+      const statusFd = this.openCsv('status.csv', STATUS_CSV_HEADER);
+      opened.push(statusFd);
+      const cmdFd = this.openCsv('cmd.csv', CMD_CSV_HEADER);
+      opened.push(cmdFd);
+      const uiFd = this.openCsv('ui.csv', UI_CSV_HEADER);
+      opened.push(uiFd);
+      const scanFd = this.openCsv('scan.csv', SCAN_CSV_HEADER);
+      opened.push(scanFd);
+      const poseFd = this.openCsv('pose.csv', POSE_CSV_HEADER);
+      opened.push(poseFd);
+      const eventFd = fs.openSync(path.join(this.dir, 'client.jsonl'), 'a');
+      opened.push(eventFd);
+
+      rx = new WireStream(this.dir, 'rx', rawPartBytes);
+      const tx = new WireStream(this.dir, 'tx', rawPartBytes);
+
+      this.statusFd = statusFd;
+      this.cmdFd = cmdFd;
+      this.uiFd = uiFd;
+      this.scanFd = scanFd;
+      this.poseFd = poseFd;
+      this.eventFd = eventFd;
+      this.rx = rx;
+      this.tx = tx;
+    } catch (err) {
+      for (const fd of opened) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* 忽略 */
+        }
+      }
+      rx?.close();
+      throw err;
+    }
 
     pruneLogSessions(
       opts.baseDir,

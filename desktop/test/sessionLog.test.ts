@@ -198,6 +198,40 @@ test('会话日志：STATUS 船钟缺口与船端重启识别', () => {
   fs.rmSync(base, { recursive: true, force: true });
 });
 
+test('会话日志：初始化中途失败会关掉已打开的句柄', () => {
+  const base = tempBase();
+  const realOpen = fs.openSync;
+  const realClose = fs.closeSync;
+  const opened: number[] = [];
+  const closed: number[] = [];
+  try {
+    (fs as unknown as { openSync: typeof fs.openSync }).openSync = ((...args: unknown[]) => {
+      if (String(args[0]).endsWith('rx.000.bin')) {
+        throw Object.assign(new Error('模拟磁盘错误'), { code: 'EIO' });
+      }
+      const fd = (realOpen as (...a: unknown[]) => number)(...args);
+      opened.push(fd);
+      return fd;
+    }) as typeof fs.openSync;
+    (fs as unknown as { closeSync: typeof fs.closeSync }).closeSync = ((fd: number) => {
+      closed.push(fd);
+      return realClose(fd);
+    }) as typeof fs.closeSync;
+
+    assert.throws(() => new SessionLogger({ baseDir: base }), /模拟磁盘错误/);
+    assert.ok(opened.length >= 6, `应已打开多个文件（实际 ${opened.length}）`);
+    assert.deepEqual(
+      opened.filter((fd) => !closed.includes(fd)),
+      [],
+      '失败的构造函数不能漏掉已打开的 fd',
+    );
+  } finally {
+    (fs as unknown as { openSync: typeof fs.openSync }).openSync = realOpen;
+    (fs as unknown as { closeSync: typeof fs.closeSync }).closeSync = realClose;
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
 test('会话日志：原始流记录格式与分片', () => {
   const base = tempBase();
   const t = 1_790_000_000_000;
