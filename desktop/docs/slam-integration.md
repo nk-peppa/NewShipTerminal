@@ -46,9 +46,12 @@ python tools/replay-session.py --session recordings\session-20261030-101500
 ```
 
 `replay-session.py` 会转换录制、用排他锁文件原子地占住一个唯一输出目录
-（`out\<会话名>-<时间戳>`），再交给 `algo/run_slam.py`。这样两次并发回放不会
-互相覆盖——上游 `batch_slam.py` 的"输出目录必须不存在"只是先检查后创建，
-直接调用 `run_slam.py` 时仍需自己保证目录唯一。
+（`out\<会话名>-<时间戳>`），再交给 `algo/run_slam.py`。转换结果写到**每次独立的
+临时目录**并在结束后删除，所以同一会话并发回放也不会互相截断；需要复用一个已转换
+好的文件时用 `--scans <file>`。
+
+上游 `batch_slam.py` 的"输出目录必须不存在"只是先检查后创建，直接调用
+`run_slam.py` 时仍需自己保证目录唯一。
 
 需要分步执行时：
 

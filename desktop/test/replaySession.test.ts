@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 
 import { buildFrame, T_SCAN } from '../src/shared/protocol.js';
 
@@ -61,7 +61,7 @@ function scanFrame(seq: number, timeMs: number, anglesCW: number[], ranges: numb
   return buildFrame(T_SCAN, seq, payload);
 }
 
-test('回放会话：两次运行落到不同输出目录', { skip: !pythonReady && 'python + numpy 不可用' }, () => {
+test('回放会话：三次并发运行互不覆盖、互不截断', { skip: !pythonReady && 'python + numpy 不可用' }, async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-replay-'));
   const session = path.join(dir, 'session-test');
   const outRoot = path.join(dir, 'out');
@@ -76,36 +76,47 @@ test('回放会话：两次运行落到不同输出目录', { skip: !pythonReady
   head.writeDoubleLE(1_760_000_000_000, 4);
   fs.writeFileSync(path.join(session, 'rx.000.bin'), Buffer.concat([head, frames]));
 
-  const runOnce = () =>
-    spawnSync(
-      python,
-      [
-        path.join(desktopRoot, 'tools', 'replay-session.py'),
-        '--session',
-        session,
-        '--out-root',
-        outRoot,
-        '--label',
-        'sess',
-      ],
-      { encoding: 'utf8', cwd: desktopRoot, timeout: 180000 },
-    );
+  // 同时起三个回放：旧实现会共用 <session>/scans.jsonl，"w" 截断正在被读取的输入
+  const runConcurrent = () =>
+    new Promise<{ code: number | null; log: string }>((resolve) => {
+      const child = spawn(
+        python,
+        [
+          path.join(desktopRoot, 'tools', 'replay-session.py'),
+          '--session',
+          session,
+          '--out-root',
+          outRoot,
+          '--label',
+          'sess',
+        ],
+        { cwd: desktopRoot },
+      );
+      let log = '';
+      child.stdout.on('data', (chunk) => (log += String(chunk)));
+      child.stderr.on('data', (chunk) => (log += String(chunk)));
+      child.on('close', (code) => resolve({ code, log }));
+    });
 
-  const first = runOnce();
-  assert.equal(first.status, 0, first.stdout + first.stderr);
-  const second = runOnce();
-  assert.equal(second.status, 0, second.stdout + second.stderr);
+  const results = await Promise.all([runConcurrent(), runConcurrent(), runConcurrent()]);
+  for (const result of results) {
+    assert.equal(result.code, 0, result.log);
+  }
 
   const outputs = fs.readdirSync(outRoot).filter((name) =>
     fs.statSync(path.join(outRoot, name)).isDirectory(),
   );
-  assert.equal(outputs.length, 2, `两次回放必须各用一个目录，实际: ${outputs.join(',')}`);
+  assert.equal(outputs.length, 3, `每次回放必须各用一个目录，实际: ${outputs.join(',')}`);
   for (const name of outputs) {
     const out = path.join(outRoot, name);
     for (const file of ['summary.json', 'trajectory.csv', 'map.pgm']) {
       assert.ok(fs.existsSync(path.join(out, file)), `${name} 缺少 ${file}`);
     }
+    const rows = fs.readFileSync(path.join(out, 'trajectory.csv'), 'utf8').trim().split('\n').length;
+    assert.ok(rows > 3, `${name} 的轨迹不完整（${rows} 行）`);
   }
+  // 中间 JSONL 必须落在每次独立的临时目录里，不能留在会话目录中
+  assert.ok(!fs.existsSync(path.join(session, 'scans.jsonl')), '会话目录不应出现共享的 scans.jsonl');
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
