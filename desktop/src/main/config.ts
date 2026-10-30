@@ -24,6 +24,7 @@ export function loadConfig(argv: string[] = process.argv.slice(1)): AppConfig {
     argOf(argv, '--algo-script') ?? path.join(__dirname, '..', '..', 'tools', 'algo-sidecar.py');
 
   const otaPort = Number(argOf(argv, '--ota-port') ?? 0);
+  const logKeep = Number(argOf(argv, '--log-keep') ?? 0);
 
   return {
     ship: { host, port: port > 0 ? port : 9527 },
@@ -45,7 +46,8 @@ export function loadConfig(argv: string[] = process.argv.slice(1)): AppConfig {
     log: {
       enabled: !argv.includes('--no-log'),
       dir: argOf(argv, '--log-dir'),
-      keep: 10,
+      // 实船一次实验 ≤10 分钟、单次约 15MB，留 20 次 ≈ 300MB
+      keep: logKeep > 0 ? Math.floor(logKeep) : 20,
       rawPartMiB: 128,
     },
   };

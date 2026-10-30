@@ -66,7 +66,8 @@ npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超
 | `--ota-port <n>` | 固件更新端口，默认 9530 |
 | `--no-window` | 无界面运行（只跑链路与算法，便于 CI/自检） |
 | `--no-log` | 关闭会话日志（默认启动即自动记录） |
-| `--log-dir <path>` | 指定日志根目录（默认 `%APPDATA%\<应用名>\logs`） |
+| `--log-dir <path>` | 指定日志根目录（默认 `%APPDATA%\usv-terminal\logs`） |
+| `--log-keep <n>` | 保留最近多少次会话（默认 20，单次约 15 MB） |
 | 无参数 | **实机模式**：自动发现 + 9527/9530 |
 
 环境变量：`USV_DEBUG=1` 每秒打印链路统计与渲染进程诊断；`USV_SHOT=<png>` 启动 2.5 s 后自截图。
@@ -127,13 +128,16 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 **启动即自动记录**，不需要手动开始。每次运行一个目录：
 
 ```
-%APPDATA%\usv-terminal\logs\session-YYYYMMDD-HHmmss\        （开发树）
-%APPDATA%\USV Terminal\logs\session-YYYYMMDD-HHmmss\        （发布包）
+%APPDATA%\usv-terminal\logs\session-YYYYMMDD-HHmmss\
 ```
 
+（Electron 的 `userData` 取自 `package.json` 的 `name`，开发树与发布包一致；
+运行 `--log-dir <path>` 可改到别处。）
+
 右栏「日志」段实时显示大小 / 行数，并可**打开目录**或**导出日志**（ZIP）。
-默认保留最近 10 次会话，原始流每 128 MiB 自动分片；`--no-log` 关闭，
-`--log-dir <path>` 可把根目录指到移动硬盘。
+实船一次实验 ≤10 分钟、单次约 15 MB；默认保留最近 20 次会话（≈300 MB），
+原始流每 128 MiB 自动分片（10 分钟用不到分片）。`--no-log` 关闭，
+`--log-dir <path>` 可把根目录指到移动硬盘，`--log-keep <n>` 调整保留次数。
 
 | 文件 | 内容 |
 |---|---|
@@ -177,6 +181,13 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 - 保存/导出对话框打开期间与 SLAM 保存相同：摇杆被忽略、油门舵角归零。
 - 日志模块不依赖 Electron，`npm test` 直接覆盖格式与 ZIP；`npm run smoke`
   额外验证真实链路 ⇄ 日志落盘。
+
+拿这批数据怎么用：
+
+- 直接看：`status.csv` / `cmd.csv` / `ui.csv` / `scan.csv` / `pose.csv` 用 Excel 打开即可；
+- 离线回放建图：`python tools/replay-session.py --session <会话目录>`
+  （自动转换 `rx.*.bin` → `scans.jsonl` → `algo/run_slam.py`，详见
+  [docs/slam-integration.md](docs/slam-integration.md)）。
 
 ## 打包发布
 

@@ -839,7 +839,7 @@ async function refreshLog(): Promise<void> {
     el.logInfo.className = 'mono muted';
     el.logInfo.textContent =
       `记录中 ${fmtDuration(s.durationMs)} · ${fmtBytes(s.bytes)} · ` +
-      `事件 ${s.events} · STATUS ${s.statusRows} · 点云 ${s.scanRows} 圈`;
+      `STATUS ${s.statusRows} · 点云 ${s.scanRows} 圈 · 位姿 ${s.poseRows} · 事件 ${s.events}`;
   } catch {
     el.logInfo.textContent = '日志状态读取失败';
     el.logInfo.className = 'mono t-bad';
