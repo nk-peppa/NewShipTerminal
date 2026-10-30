@@ -12,6 +12,7 @@
     "build": "npm run build:main && npm run build:renderer && npm run build:assets && npm run build:info",
     "ship": "node tools/ship.mjs",
     "test": "tsc -p tsconfig.test.json && node --test \"dist-test/**/*.test.js\"",
+    "algo:test": "cd algo && python -m pytest tests -q -p no:cacheprovider",
     "sim": "node tools/sim-boat.cjs",
     "icons": "node tools/make-icon-preview.mjs",
     "sim:check": "npm run build && node tools/sim-check.cjs",
