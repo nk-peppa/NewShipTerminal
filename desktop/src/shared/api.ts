@@ -156,6 +156,8 @@ export interface LogStatusView {
   /** 会话目录；日志关闭时为 null */
   dir: string | null;
   startedAt: number | null;
+  /** 已记录时长（ms），面板用来显示 00:16 这种运行时长 */
+  durationMs: number;
   /** 已写入字节数（含原始帧记录头） */
   bytes: number;
   events: number;

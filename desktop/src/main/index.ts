@@ -286,12 +286,36 @@ app.on('before-quit', (event) => {
   }, 600);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('[main] 未捕获异常', err);
-  logger?.error('uncaught-exception', { message: err.message, stack: err.stack });
-});
+let crashing = false;
+
+/**
+ * 未捕获异常之后不能只记一笔就继续跑：此时进程状态可能已经不一致，
+ * 而 50Hz 控制环还在往船上发指令。先撤防归零，再走正常退出流程
+ * （before-quit 会保持连接 600ms 连发安全帧），2 秒没退就强退。
+ */
+function crashShutdown(kind: string, err: unknown): void {
+  if (crashing) {
+    process.exit(1);
+  }
+  crashing = true;
+  const message = err instanceof Error ? err.message : String(err);
+  const stack = err instanceof Error ? err.stack : undefined;
+  console.error(`[main] ${kind}，安全停车后退出`, err);
+  logger?.error(kind, { message, stack });
+
+  safety.setArm(false);
+  safety.setEstop(false);
+  safety.forceZero();
+  setTimeout(() => process.exit(1), 2000);
+  if (app.isReady()) app.quit();
+  else process.exit(1);
+}
+
+process.on('uncaughtException', (err) => crashShutdown('uncaught-exception', err));
 
 process.on('unhandledRejection', (reason) => {
+  // 单个 Promise 失败（对话框取消、读盘失败等）不影响控制环，留痕即可；
+  // 真到状态不可信时由 uncaughtException 兜底安全停车。
   console.error('[main] 未处理的 Promise 拒绝', reason);
   logger?.error('unhandled-rejection', {
     message: reason instanceof Error ? reason.message : String(reason),

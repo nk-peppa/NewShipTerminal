@@ -5,9 +5,18 @@
  *   - 日志里主要是原始二进制帧，deflate 收益低，level 9 还会把主进程卡住；
  *   - 一次实验的日志可能上百 MB，整个读进内存不安全。
  * 所以这里只做 store（不压缩），边读边写，CRC 在流式读取时累加。
+ *
+ * 为什么是 async：
+ *   log:save 跑在 Electron 主进程上，和 50Hz CMD 调度器同一个线程。同步读整包
+ *   会把控制环卡住，日志大了甚至可能让船端 300ms 看门狗触发失联保护。这里按
+ *   1 MiB 分块用异步 IO，块之间把事件循环让出去，控制环照常跑。
+ *
+ * 每个文件在导出开始时取一次 size，只读这么多字节：边录边导时文件还在增长，
+ * 按 size 截断保证导出的是「发起导出那一刻的前缀」。同步写的行是一次一条，
+ * 所以这个边界一定落在行尾，不会切出半行。
  */
 
-import fs from 'node:fs';
+import fs from 'node:fs/promises';
 import path from 'node:path';
 
 export interface ZipExtraEntry {
@@ -19,6 +28,9 @@ export interface ZipOutcome {
   bytes: number;
   files: string[];
 }
+
+/** 单次读写的分块大小 */
+const CHUNK_BYTES = 1 << 20;
 
 const CRC_TABLE = (() => {
   const t = new Int32Array(256);
@@ -92,18 +104,28 @@ function centralHeader(
   return h;
 }
 
+/** 全量写出（FileHandle.write 允许部分写，这里循环补齐） */
+async function writeAll(handle: fs.FileHandle, buf: Buffer, position: number): Promise<void> {
+  let done = 0;
+  while (done < buf.length) {
+    const { bytesWritten } = await handle.write(buf, done, buf.length - done, position + done);
+    if (bytesWritten <= 0) throw new Error('ZIP 写入中断');
+    done += bytesWritten;
+  }
+}
+
 /**
  * 把 dir 下的普通文件（按名称排序）和 extra 虚拟文件写进 dest。
  * 不做压缩；调用方负责写到 .part 再改名。
  */
-export function zipDirectoryToFile(
+export async function zipDirectoryToFile(
   dir: string,
   dest: string,
   extra: ZipExtraEntry[] = [],
   at = new Date(),
-): ZipOutcome {
-  const names = fs
-    .readdirSync(dir, { withFileTypes: true })
+): Promise<ZipOutcome> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  const names = entries
     .filter((e) => e.isFile())
     .map((e) => e.name)
     .sort();
@@ -111,72 +133,78 @@ export function zipDirectoryToFile(
   if (entryCount > 0xffff) throw new Error(`文件过多（${entryCount}），超出 ZIP 上限`);
 
   const { time, date } = dosDateTime(at);
-  const out = fs.openSync(dest, 'w');
+  const out = await fs.open(dest, 'w');
   const centrals: Buffer[] = [];
   const files: string[] = [];
-  const chunk = Buffer.allocUnsafe(1 << 20);
+  const chunk = Buffer.allocUnsafe(CHUNK_BYTES);
   let offset = 0;
 
+  const addEntry = async (
+    name: string,
+    size: number,
+    fill: (emit: (b: Buffer) => Promise<void>) => Promise<void>,
+  ): Promise<void> => {
+    const nameBuf = Buffer.from(name, 'utf8');
+    const header = localHeader(nameBuf, time, date);
+    const headerOffset = offset;
+    await writeAll(out, header, offset);
+    await writeAll(out, nameBuf, offset + header.length);
+    offset += header.length + nameBuf.length;
+
+    let crc = -1;
+    let written = 0;
+    await fill(async (b) => {
+      crc = crc32Update(crc, b);
+      await writeAll(out, b, offset);
+      offset += b.length;
+      written += b.length;
+    });
+    if (written !== size) throw new Error(`${name} 长度不一致（预期 ${size}，实写 ${written} 字节）`);
+    if (offset > 0xffffffff) throw new Error('日志总大小超过 4 GiB，暂不支持 ZIP64');
+
+    const crcValue = (crc ^ -1) >>> 0;
+    header.writeUInt32LE(crcValue, 14);
+    header.writeUInt32LE(size, 18);
+    header.writeUInt32LE(size, 22);
+    await writeAll(out, header, headerOffset);
+
+    centrals.push(centralHeader(nameBuf, crcValue, size, headerOffset, time, date), nameBuf);
+    files.push(name);
+  };
+
   try {
-    const writeEntry = (name: string, size: number, payload: (emit: (b: Buffer) => void) => number) => {
-      const nameBuf = Buffer.from(name, 'utf8');
-      const header = localHeader(nameBuf, time, date);
-      const headerOffset = offset;
-      fs.writeSync(out, header);
-      fs.writeSync(out, nameBuf);
-      offset += header.length + nameBuf.length;
-
-      let crc = -1;
-      const written = payload((b) => {
-        crc = crc32Update(crc, b);
-        fs.writeSync(out, b);
-        offset += b.length;
-      });
-
-      if (written !== size) throw new Error(`${name} 在导出过程中被修改（${size} → ${written} 字节）`);
-      if (offset > 0xffffffff) throw new Error('日志总大小超过 4 GiB，暂不支持 ZIP64');
-
-      header.writeUInt32LE((crc ^ -1) >>> 0, 14);
-      header.writeUInt32LE(size, 18);
-      header.writeUInt32LE(size, 22);
-      fs.writeSync(out, header, 0, 30, headerOffset);
-
-      centrals.push(
-        centralHeader(nameBuf, (crc ^ -1) >>> 0, size, headerOffset, time, date),
-        nameBuf,
-      );
-      files.push(name);
-    };
-
     for (const name of names) {
       const file = path.join(dir, name);
-      const size = fs.statSync(file).size;
-      const fd = fs.openSync(file, 'r');
+      // 先定住长度：导出期间日志还在追加，只读这么多就是一致的前缀
+      const size = (await fs.stat(file)).size;
+      const fd = await fs.open(file, 'r');
       try {
-        writeEntry(name, size, (emit) => {
-          let total = 0;
-          for (;;) {
-            const n = fs.readSync(fd, chunk, 0, chunk.length, null);
-            if (n <= 0) break;
-            emit(chunk.subarray(0, n));
-            total += n;
+        await addEntry(name, size, async (emit) => {
+          let read = 0;
+          while (read < size) {
+            const want = Math.min(CHUNK_BYTES, size - read);
+            const { bytesRead } = await fd.read(chunk, 0, want, read);
+            if (bytesRead <= 0) throw new Error(`${name} 在读过程中被截断`);
+            await emit(chunk.subarray(0, bytesRead));
+            read += bytesRead;
           }
-          return total;
         });
       } finally {
-        fs.closeSync(fd);
+        await fd.close();
       }
     }
 
     for (const e of extra) {
-      writeEntry(e.name, e.data.length, (emit) => {
-        emit(e.data);
-        return e.data.length;
+      await addEntry(e.name, e.data.length, async (emit) => {
+        for (let pos = 0; pos < e.data.length; pos += CHUNK_BYTES) {
+          await emit(e.data.subarray(pos, pos + CHUNK_BYTES));
+        }
       });
     }
 
     const central = Buffer.concat(centrals);
-    fs.writeSync(out, central);
+    const centralOffset = offset;
+    await writeAll(out, central, offset);
     offset += central.length;
 
     const eocd = Buffer.alloc(22);
@@ -186,14 +214,14 @@ export function zipDirectoryToFile(
     eocd.writeUInt16LE(entryCount, 8);
     eocd.writeUInt16LE(entryCount, 10);
     eocd.writeUInt32LE(central.length, 12);
-    eocd.writeUInt32LE(offset - central.length, 16);
+    eocd.writeUInt32LE(centralOffset, 16);
     eocd.writeUInt16LE(0, 20);
-    fs.writeSync(out, eocd);
+    await writeAll(out, eocd, offset);
     offset += eocd.length;
 
     return { bytes: offset, files };
   } finally {
-    fs.closeSync(out);
+    await out.close();
   }
 }
 

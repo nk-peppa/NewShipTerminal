@@ -262,7 +262,7 @@ test('会话日志：按数量清理旧会话，不碰无关目录', () => {
   }
 });
 
-test('日志导出：store ZIP 结构、CRC 与附加 snapshot', () => {
+test('日志导出：store ZIP 结构、CRC 与附加 snapshot', async () => {
   const base = tempBase();
   try {
     const log = new SessionLogger({ baseDir: base });
@@ -272,7 +272,7 @@ test('日志导出：store ZIP 结构、CRC 与附加 snapshot', () => {
 
     const dest = path.join(base, 'export.zip');
     const extra = Buffer.from('{"exported":true}\n', 'utf8');
-    const outcome = zipDirectoryToFile(log.dir, dest, [{ name: 'snapshot.json', data: extra }]);
+    const outcome = await zipDirectoryToFile(log.dir, dest, [{ name: 'snapshot.json', data: extra }]);
     assert.equal(fs.statSync(dest).size, outcome.bytes);
     assert.ok(outcome.files.includes('snapshot.json'));
     assert.ok(outcome.files.includes('status.csv'));
@@ -283,6 +283,30 @@ test('日志导出：store ZIP 结构、CRC 与附加 snapshot', () => {
     assert.match(entries.get('client.jsonl')?.toString('utf8') ?? '', /"type":"hello"/);
     assert.match(entries.get('meta.json')?.toString('utf8') ?? '', /usv-terminal-session-log/);
   } finally {
+    fs.rmSync(base, { recursive: true, force: true });
+  }
+});
+
+test('日志导出：边录边导只取导出时刻的前缀，且不切出半行', async () => {
+  const base = tempBase();
+  const log = new SessionLogger({ baseDir: base });
+  try {
+    for (let i = 0; i < 50; i++) log.status({ ...STATUS, timeMs: 1000 + i * 20 });
+
+    const dest = path.join(base, 'live.zip');
+    const outcome = await zipDirectoryToFile(log.dir, dest, []);
+    const entries = readZip(fs.readFileSync(dest));
+    const live = entries.get('status.csv')?.toString('utf8') ?? '';
+    assert.equal(live.trim().split('\n').length, 1 + 50);
+    assert.ok(live.endsWith('\n'), '前缀必须断在行尾');
+    assert.ok(outcome.bytes > 0);
+
+    // 导出之后继续写，不应该影响已经导出的包
+    for (let i = 0; i < 10; i++) log.status({ ...STATUS, timeMs: 3000 + i * 20 });
+    const after = readZip(fs.readFileSync(dest));
+    assert.equal((after.get('status.csv')?.toString('utf8') ?? '').trim().split('\n').length, 1 + 50);
+  } finally {
+    log.close('test');
     fs.rmSync(base, { recursive: true, force: true });
   }
 });

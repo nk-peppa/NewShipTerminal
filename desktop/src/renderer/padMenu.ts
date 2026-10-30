@@ -150,7 +150,7 @@ export class PadMenu {
     }
     const pool = bestCol ? list.filter((el) => columnOf(el) === bestCol) : list;
     pool.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-    this.setFocus(pool[0] ?? list[0]);
+    this.setFocus(pool[0] ?? list[0] ?? null);
   }
 
   private clearFocus(): void {

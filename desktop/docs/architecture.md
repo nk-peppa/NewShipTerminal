@@ -130,7 +130,7 @@ desktop/
 
 | 命令 | 作用 |
 |---|---|
-| `npm run build` | tsc（主进程/预加载）+ esbuild（渲染）+ 复制静态资源 |
+| `npm run build` | tsc（主进程/预加载 + 渲染进程类型检查）+ esbuild（渲染）+ 复制静态资源 |
 | `npm test` | 协议黄金帧 + 分片 + CRC + zlib + 会话日志格式 |
 | `npm run smoke` | 假船端 ⇄ 真实链路：50Hz、未解锁不输出、解锁、急停、UI 超时、日志落盘 |
 | `npm start` | 启动应用（需先 `npm run sim` 或接实船） |

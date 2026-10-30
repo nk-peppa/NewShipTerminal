@@ -122,10 +122,17 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
 
   /* ---------------- 会话日志 ---------------- */
 
+  // 船端是否已解锁/急停：OTA 与日志导出前都要求先 disarm
+  let boatArmed = false;
+  rt.link.on('status', (st) => {
+    boatArmed = (st.flags & (ST_ARMED | ST_ESTOP)) !== 0;
+  });
+
   const logOff = (): LogStatusView => ({
     enabled: false,
     dir: null,
     startedAt: null,
+    durationMs: 0,
     bytes: 0,
     events: 0,
     statusRows: 0,
@@ -154,6 +161,10 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
     if (!lg) return { ok: false, message: '日志未启用（--no-log）' };
     const probe = lg.stats();
     if (!probe.enabled) return { ok: false, message: `日志写盘失败：${probe.error ?? '未知原因'}` };
+    // 导出要读几十 MB，虽然已经分块让出事件循环，仍不该在船动着的时候做
+    if (boatArmed || rt.safety.snapshot().armRequested) {
+      return { ok: false, message: '船端已解锁/急停中，请先撤防再导出日志' };
+    }
 
     const r = await dialog.showSaveDialog(win, {
       title: '保存会话日志',
@@ -170,8 +181,8 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
         note: '导出时日志仍在记录，此后的数据不在本包内；原始流格式见 README.txt',
         ...lg.stats(),
       };
-      // 同步写盘 + 同步读取：导出期间日志不会变化，ZIP 天然是一致快照
-      const outcome = zipDirectoryToFile(lg.dir, `${r.filePath}.part`, [
+      // 分块异步读盘：每个文件按导出开始时的长度截断，ZIP 仍是一致的前缀快照
+      const outcome = await zipDirectoryToFile(lg.dir, `${r.filePath}.part`, [
         {
           name: 'snapshot.json',
           data: Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, 'utf8'),
@@ -190,12 +201,6 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
       lg.error('log-export-failed', { message: (err as Error).message });
       return { ok: false, message: `导出失败：${(err as Error).message}` };
     }
-  });
-
-  // 记录是否已解锁：升级前必须 disarm
-  let boatArmed = false;
-  rt.link.on('status', (st) => {
-    boatArmed = (st.flags & (ST_ARMED | ST_ESTOP)) !== 0;
   });
 
   ipcMain.handle('fw:pick', async () => {

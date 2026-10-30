@@ -284,6 +284,7 @@ export class SessionLogger {
   private errorCount = 0;
   private failure: string | null = null;
   private closed = false;
+  private fdsClosed = false;
 
   private readonly statusGapMs: number;
   private lastStatusBoatMs: number | null = null;
@@ -370,7 +371,13 @@ export class SessionLogger {
     this.closeFds();
   }
 
+  /**
+   * 只关一次：fail() 已经关过的话，退出时的 close() 不能再关。
+   * 句柄号会被系统复用，二次 closeSync 可能关掉 SLAM 导出/侧车管道等其他组件的 fd。
+   */
   private closeFds(): void {
+    if (this.fdsClosed) return;
+    this.fdsClosed = true;
     for (const fd of [this.eventFd, this.statusFd, this.cmdFd, this.uiFd, this.scanFd, this.poseFd]) {
       try {
         fs.closeSync(fd);
@@ -378,8 +385,8 @@ export class SessionLogger {
         /* 已关闭或从未打开 */
       }
     }
-    this.rx?.close();
-    this.tx?.close();
+    this.rx.close();
+    this.tx.close();
   }
 
   event(level: LogLevel, type: string, data?: Record<string, unknown>): void {
