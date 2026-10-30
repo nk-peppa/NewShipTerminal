@@ -1,1 +1,1 @@
-from .core import LidarSlam, OccupancyGrid
+from .core import LidarSlam, OccupancyGrid, SlamConfig
