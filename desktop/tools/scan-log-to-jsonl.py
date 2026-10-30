@@ -52,16 +52,19 @@ def crc16(data: bytes, crc: int = 0xFFFF) -> int:
 def read_records(paths):
     """按文件顺序读出 (到达时刻毫秒, 原始字节)；末尾截断的记录直接忽略。"""
     for path in paths:
-        blob = path.read_bytes()
-        offset = 0
-        while offset + RECORD_HEADER <= len(blob):
-            size = struct.unpack_from("<I", blob, offset)[0]
-            at_ms = struct.unpack_from("<d", blob, offset + 4)[0]
-            start = offset + RECORD_HEADER
-            if size == 0 or start + size > len(blob):
-                break
-            yield at_ms, blob[start:start + size]
-            offset = start + size
+        with path.open("rb") as handle:
+            while True:
+                head = handle.read(RECORD_HEADER)
+                if len(head) < RECORD_HEADER:
+                    break
+                size = struct.unpack_from("<I", head, 0)[0]
+                at_ms = struct.unpack_from("<d", head, 4)[0]
+                if size == 0:
+                    break
+                chunk = handle.read(size)
+                if len(chunk) < size:
+                    break
+                yield at_ms, chunk
 
 
 def parse_frames(records, stats):
@@ -138,21 +141,19 @@ def decode_scan2(payload: bytes):
 
 
 class Clock:
-    """船端时钟可能回退或归零；发现回退就整体加偏移，保持严格递增。
+    """保持设备时间严格递增，同时**不切换时基**。
 
-    时基在第一次调用时确定，之后不再切换：设备时间 0 是合法值（刚开机），
-    不能因为它就改用 epoch 到达时间，否则会产生十亿秒级的向前跳变，
-    让已初始化的地图因 max_tracking_gap 直接丢失跟踪。
+    ``use_device`` 在转换开始前一次性确定（见 ``device_clock_available``）：
+    设备时间 0 是合法值，不能因为它是 0 就改用 epoch 到达时间，否则同一条
+    记录里的多帧会坍缩成 1 ms 间隔，扭曲速度估计与运动门限。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, use_device: bool) -> None:
+        self.use_device = use_device
         self.last = None
         self.offset = 0.0
-        self.use_device = None
 
     def seconds(self, time_ms: int, arrival_ms: float) -> float:
-        if self.use_device is None:
-            self.use_device = time_ms > 0
         base_ms = time_ms if self.use_device else arrival_ms
         value = base_ms / 1000.0 + self.offset
         if self.last is not None and value <= self.last:
@@ -160,6 +161,32 @@ class Clock:
             value = base_ms / 1000.0 + self.offset
         self.last = value
         return value
+
+
+def frame_time_ms(frame_type: int, payload: bytes) -> int:
+    offset = 4 if frame_type == T_SCAN2 else 0
+    if len(payload) < offset + 4:
+        return 0
+    return struct.unpack_from("<I", payload, offset)[0]
+
+
+def device_clock_available(paths, sample: int = 64) -> bool:
+    """设备时钟是否可用。
+
+    固件没有时钟时整段录制的设备时间都是 0，只能退回记录到达时间。
+    正常录制第一帧就是非零值，因此这里通常只读一条记录就返回。
+    """
+    scratch = {"frames": 0, "crc_errors": 0, "oversized": 0, "dropped_bytes": 0}
+    checked = 0
+    for frame_type, payload, _ in parse_frames(read_records(paths), scratch):
+        if frame_type not in (T_SCAN, T_SCAN2):
+            continue
+        if frame_time_ms(frame_type, payload) > 0:
+            return True
+        checked += 1
+        if checked >= sample:
+            return False
+    return False
 
 
 def main(argv=None) -> int:
@@ -193,7 +220,7 @@ def main(argv=None) -> int:
         "bad_scans": 0,
         "rejected": 0,
     }
-    clock = Clock()
+    clock = Clock(device_clock_available(paths))
     scans = scan2 = written = 0
 
     with output.open("w", encoding="utf-8", newline="\n") as handle:

@@ -186,3 +186,35 @@ test('时钟归零不切时基，超长声明不阻塞后续帧', { skip: !pytho
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+test('首帧设备时间为 0 时仍用设备时基', { skip: !pythonReady && 'python + numpy 不可用' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-scanlog-zero-'));
+  // 三帧挤在同一条记录里（同一到达时间），设备时间是 0/100/200 ms
+  const frames = [0, 100, 200].map((t, i) => buildFrame(T_SCAN, i + 1, scanPayload(t)));
+  fs.writeFileSync(path.join(dir, 'rx.000.bin'), record(1_760_000_000_000, Buffer.concat(frames)));
+
+  const out = path.join(dir, 'scans.jsonl');
+  const run = spawnSync(
+    python,
+    [path.join(desktopRoot, 'tools', 'scan-log-to-jsonl.py'), '--session', dir, '--output', out],
+    { encoding: 'utf8' },
+  );
+  assert.equal(run.status, 0, run.stderr);
+
+  const stamps = fs
+    .readFileSync(out, 'utf8')
+    .trim()
+    .split('\n')
+    .map((line) => (JSON.parse(line) as ScanLine).timestamp);
+  assert.equal(stamps.length, 3);
+  assert.ok(
+    Math.abs((stamps[1] ?? 0) - (stamps[0] ?? 0) - 0.1) < 1e-6,
+    `设备时间 0 是合法值，第 2 帧间隔应为 0.1 s: ${stamps.join(',')}`,
+  );
+  assert.ok(
+    Math.abs((stamps[2] ?? 0) - (stamps[1] ?? 0) - 0.1) < 1e-6,
+    `第 3 帧间隔应为 0.1 s: ${stamps.join(',')}`,
+  );
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
