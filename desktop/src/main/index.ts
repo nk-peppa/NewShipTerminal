@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import path from 'node:path';
 import { app, BrowserWindow, Menu } from 'electron';
 
@@ -6,7 +7,8 @@ import { AlgoSidecar } from './algo/sidecar.js';
 import { loadConfig } from './config.js';
 import { attachIpc } from './ipc/bridge.js';
 import { ShipDiscovery } from './link/discovery.js';
-import { TcpLink } from './link/tcpLink.js';
+import { TcpLink, type ReceivedScan } from './link/tcpLink.js';
+import { SessionLogger } from './log/sessionLog.js';
 import { SafetySupervisor } from './safety/supervisor.js';
 
 const cfg = loadConfig();
@@ -39,6 +41,53 @@ const algo = cfg.algo.enabled
 
 let win: BrowserWindow | null = null;
 let quitting = false;
+let logger: SessionLogger | null = null;
+let logError: string | null = null;
+
+function readBuildInfo(): unknown {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(app.getAppPath(), 'build-info.json'), 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** 把链路/算法事件接进会话日志：原始字节 + 解码后的 CSV/事件 */
+function attachSessionLog(lg: SessionLogger): void {
+  link.setWireTap((dir, data, atMs) => lg.wire(dir, data, atMs));
+  link.on('status', (st) => lg.status(st));
+  link.on('cmd', (cmd) => lg.command(cmd));
+  link.on('scan', ({ scan, recvMs }: ReceivedScan) => lg.scan(scan, recvMs));
+  link.on('state', (state) => lg.event('info', 'link-state', { ...state }));
+  link.on('hello', (hello) => lg.event('info', 'hello', { ...hello }));
+  link.on('timesync', (result) => lg.event('info', 'timesync', { ...result }));
+  link.on('decode-error', (err) =>
+    lg.warn('decode-error', { message: err instanceof Error ? err.message : String(err) }),
+  );
+
+  discovery?.on('ships', (ships: ShipView[]) =>
+    lg.event('info', 'ships', {
+      ships: ships.map((s) => ({
+        name: s.name,
+        sn: s.sn,
+        host: s.host,
+        tcpPort: s.tcpPort,
+        state: s.state,
+        lidar: s.lidar,
+        armed: s.armed,
+        estop: s.estop,
+        failsafe: s.failsafe,
+        hz: s.hz,
+      })),
+    }),
+  );
+
+  algo?.on('pose', (pose) => lg.pose(pose));
+  algo?.on('health', (h) => lg.event('info', 'algo-health', { ...h }));
+  algo?.on('log', (line: string) =>
+    lg.event('info', 'algo-log', { line: line.length > 2000 ? `${line.slice(0, 2000)}…` : line }),
+  );
+}
 
 function createWindow(): BrowserWindow {
   const created = new BrowserWindow({
@@ -67,6 +116,20 @@ function createWindow(): BrowserWindow {
   // 锁死 16:9（用户拖边框时按比例缩放；最大化/贴边由系统处理）
   created.setAspectRatio(16 / 9);
   created.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  // 渲染进程故障始终留档，不能只在调试开关下才可见
+  created.webContents.on('did-fail-load', (_e, code, desc, url) => {
+    console.error(`[ui] 加载失败 ${code} ${desc} ${url}`);
+    logger?.error('renderer-load-failed', { code, description: desc, url });
+  });
+  created.webContents.on('preload-error', (_e, file, err) => {
+    console.error(`[ui] preload 失败 ${file}: ${err.message}`);
+    logger?.error('preload-error', { file, message: err.message });
+  });
+  created.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[ui] 渲染进程退出: ${details.reason}`);
+    logger?.error('renderer-gone', { reason: details.reason, exitCode: details.exitCode });
+  });
 
   if (process.env.USV_DEBUG) {
     created.webContents.on('did-finish-load', () => {
@@ -112,15 +175,6 @@ function createWindow(): BrowserWindow {
         .then((r) => console.log('[ui] 布局', r))
         .catch((e) => console.error('[ui] 布局检测失败', e.message));
     });
-    created.webContents.on('did-fail-load', (_e, code, desc, url) =>
-      console.error(`[ui] 加载失败 ${code} ${desc} ${url}`),
-    );
-    created.webContents.on('preload-error', (_e, file, err) =>
-      console.error(`[ui] preload 失败 ${file}: ${err.message}`),
-    );
-    created.webContents.on('render-process-gone', (_e, details) =>
-      console.error(`[ui] 渲染进程退出: ${details.reason}`),
-    );
   }
 
   created.on('closed', () => {
@@ -133,13 +187,49 @@ app.whenReady().then(() => {
   // 去掉原生菜单栏（File / Edit / View …）
   Menu.setApplicationMenu(null);
 
+  if (cfg.log.enabled) {
+    try {
+      logger = new SessionLogger({
+        baseDir: cfg.log.dir ?? path.join(app.getPath('userData'), 'logs'),
+        keepSessions: cfg.log.keep,
+        rawPartBytes: cfg.log.rawPartMiB > 0 ? cfg.log.rawPartMiB * 1024 * 1024 : 0,
+        meta: {
+          app: {
+            name: app.getName(),
+            version: app.getVersion(),
+            electron: process.versions.electron,
+            chrome: process.versions.chrome,
+            node: process.versions.node,
+            platform: process.platform,
+            arch: process.arch,
+            locale: app.getLocale(),
+          },
+          cwd: process.cwd(),
+          argv: process.argv.slice(1),
+          config: cfg,
+          build: readBuildInfo(),
+        },
+      });
+      attachSessionLog(logger);
+      logger.event('info', 'app-start', { argv: process.argv.slice(1) });
+      console.log(`[log] 会话日志 → ${logger.dir}`);
+    } catch (err) {
+      console.error('[log] 初始化失败，本次不记录', err);
+      logError = err instanceof Error ? err.message : String(err);
+      logger = null;
+    }
+  }
+
   if (cfg.ui.window) {
     win = createWindow();
-    attachIpc(win, { cfg, link, safety, discovery, algo });
+    attachIpc(win, { cfg, link, safety, discovery, algo, log: logger, logError });
   }
 
   if (discovery) {
-    discovery.on('error', (err: Error) => console.warn(`[discovery] ${err.message}`));
+    discovery.on('error', (err: Error) => {
+      console.warn(`[discovery] ${err.message}`);
+      logger?.warn('discovery-error', { message: err.message });
+    });
     discovery.on('ships', (ships: ShipView[]) => {
       if (cfg.ship.host) return;
       const primary = ships.find((s) => !s.armed) ?? ships[0];
@@ -186,10 +276,20 @@ app.on('before-quit', (event) => {
     link.stop();
     discovery?.stop();
     algo?.stop();
+    logger?.close('quit');
     app.quit();
   }, 600);
 });
 
 process.on('uncaughtException', (err) => {
   console.error('[main] 未捕获异常', err);
+  logger?.error('uncaught-exception', { message: err.message, stack: err.stack });
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[main] 未处理的 Promise 拒绝', reason);
+  logger?.error('unhandled-rejection', {
+    message: reason instanceof Error ? reason.message : String(reason),
+    stack: reason instanceof Error ? reason.stack : undefined,
+  });
 });

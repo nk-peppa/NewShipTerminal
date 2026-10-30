@@ -9,6 +9,7 @@ export interface AppConfig {
   discovery: { enabled: boolean; udpPort: number; probeIntervalMs: number; ttlMs: number };
   algo: { enabled: boolean; python: string; script: string };
   ui: { window: boolean };
+  log: { enabled: boolean; dir: string | null; keep: number; rawPartMiB: number };
 }
 
 function argOf(argv: string[], name: string): string | null {
@@ -41,5 +42,11 @@ export function loadConfig(argv: string[] = process.argv.slice(1)): AppConfig {
       script: algoScript,
     },
     ui: { window: !argv.includes('--no-window') },
+    log: {
+      enabled: !argv.includes('--no-log'),
+      dir: argOf(argv, '--log-dir'),
+      keep: 10,
+      rawPartMiB: 128,
+    },
   };
 }

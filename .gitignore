@@ -22,6 +22,7 @@ build-info.json
 
 # 运行时日志与录制数据
 *.log
+logs/
 recordings/
 
 # 依赖安装戳（启动器写）

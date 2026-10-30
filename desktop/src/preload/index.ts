@@ -5,6 +5,8 @@ import type {
   ConfigView,
   FirmwareStateView,
   LinkStateView,
+  LogSaveView,
+  LogStatusView,
   MapView,
   PoseView,
   ScanView,
@@ -31,6 +33,9 @@ const api: UsvApi = {
   reconnect: () => ipcRenderer.send('link:reconnect'),
   clearMap: () => ipcRenderer.send('algo:reset'),
   saveSlam: () => ipcRenderer.invoke('slam:save') as Promise<SlamSaveView>,
+  getLogStatus: () => ipcRenderer.invoke('log:info') as Promise<LogStatusView>,
+  openLogDir: () => ipcRenderer.invoke('log:open') as Promise<{ ok: boolean; message: string }>,
+  saveLog: () => ipcRenderer.invoke('log:save') as Promise<LogSaveView>,
   updateFirmware: (file) =>
     ipcRenderer.invoke('fw:update', file) as Promise<{ ok: boolean; message: string }>,
   onFirmware: (cb) => subscribe<FirmwareStateView>('evt:fw', cb),

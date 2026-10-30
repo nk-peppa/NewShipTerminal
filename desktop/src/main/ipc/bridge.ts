@@ -1,4 +1,4 @@
-import { app, dialog, ipcMain, type BrowserWindow } from 'electron';
+import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
 
 import { runOta } from '../firmware/ota.js';
@@ -7,6 +7,8 @@ import type {
   AlgoHealthView,
   ConfigView,
   LinkStateView,
+  LogSaveView,
+  LogStatusView,
   MapView,
   PoseView,
   ScanView,
@@ -24,6 +26,8 @@ import type { AlgoSidecar } from '../algo/sidecar.js';
 import type { AppConfig } from '../config.js';
 import type { ShipDiscovery } from '../link/discovery.js';
 import type { ReceivedScan, TcpLink } from '../link/tcpLink.js';
+import { zipDirectoryToFile } from '../log/logArchive.js';
+import type { SessionLogger } from '../log/sessionLog.js';
 import type { SafetySupervisor } from '../safety/supervisor.js';
 
 export interface Runtime {
@@ -32,6 +36,9 @@ export interface Runtime {
   safety: SafetySupervisor;
   discovery: ShipDiscovery | null;
   algo: AlgoSidecar | null;
+  log: SessionLogger | null;
+  /** 日志初始化失败原因；正常关闭（--no-log）为 null */
+  logError: string | null;
 }
 
 export function configView(cfg: AppConfig): ConfigView {
@@ -47,19 +54,30 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
   const slamLog = new SlamRecorder();
 
   ipcMain.on('ui:cmd', (_e, msg: { throttle: number; rudder: number }) => {
-    rt.safety.onUiCmd(Number(msg?.throttle) || 0, Number(msg?.rudder) || 0);
+    const throttle = Number(msg?.throttle) || 0;
+    const rudder = Number(msg?.rudder) || 0;
+    rt.safety.onUiCmd(throttle, rudder);
+    rt.log?.uiCommand(throttle, rudder);
   });
-  ipcMain.on('ui:arm', (_e, on: boolean) => rt.safety.setArm(!!on));
-  ipcMain.on('ui:estop', (_e, on: boolean) => rt.safety.setEstop(!!on));
+  ipcMain.on('ui:arm', (_e, on: boolean) => {
+    rt.safety.setArm(!!on);
+    rt.log?.event('info', 'ui-arm', { on: !!on });
+  });
+  ipcMain.on('ui:estop', (_e, on: boolean) => {
+    rt.safety.setEstop(!!on);
+    rt.log?.event('info', 'ui-estop', { on: !!on });
+  });
   ipcMain.handle('ui:config', () => configView(rt.cfg));
 
   ipcMain.on('link:reconnect', () => {
     console.log('[ui] 手动重连');
+    rt.log?.event('info', 'ui-reconnect');
     rt.link.reconnectNow();
   });
 
   ipcMain.on('algo:reset', () => {
     console.log('[ui] 清空 SLAM 地图');
+    rt.log?.event('info', 'ui-clear-map');
     slamLog.clear();
     rt.algo?.reset();
   });
@@ -90,9 +108,85 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
       await fs.writeFile(tmp, zip);
       await fs.rename(tmp, r.filePath);
       console.log(`[slam] 已导出 ${files.join(', ')} → ${r.filePath} (${zip.length} B)`);
+      rt.log?.event('info', 'slam-export', {
+        file: r.filePath,
+        files: files.length,
+        bytes: zip.length,
+      });
       return { ok: true, message: `${files.length} 个文件`, bytes: zip.length };
     } catch (err) {
+      rt.log?.error('slam-export-failed', { message: (err as Error).message });
       return { ok: false, message: `保存失败：${(err as Error).message}` };
+    }
+  });
+
+  /* ---------------- 会话日志 ---------------- */
+
+  const logOff = (): LogStatusView => ({
+    enabled: false,
+    dir: null,
+    startedAt: null,
+    bytes: 0,
+    events: 0,
+    statusRows: 0,
+    cmdRows: 0,
+    uiRows: 0,
+    scanRows: 0,
+    poseRows: 0,
+    rxBytes: 0,
+    txBytes: 0,
+    error: rt.logError,
+  });
+
+  ipcMain.handle('log:info', (): LogStatusView => rt.log?.stats() ?? logOff());
+
+  ipcMain.handle('log:open', async (): Promise<{ ok: boolean; message: string }> => {
+    if (!rt.log) return { ok: false, message: '日志未启用（--no-log）' };
+    rt.log.event('info', 'log-open-dir');
+    const err = await shell.openPath(rt.log.dir);
+    return err ? { ok: false, message: err } : { ok: true, message: rt.log.dir };
+  });
+
+  ipcMain.handle('log:save', async (): Promise<LogSaveView> => {
+    const lg = rt.log;
+    if (!lg) return { ok: false, message: '日志未启用（--no-log）' };
+    const probe = lg.stats();
+    if (!probe.enabled) return { ok: false, message: `日志写盘失败：${probe.error ?? '未知原因'}` };
+
+    const r = await dialog.showSaveDialog(win, {
+      title: '保存会话日志',
+      defaultPath: `usv-log-${stampName()}.zip`,
+      filters: [{ name: 'ZIP 压缩包', extensions: ['zip'] }],
+      properties: ['createDirectory', 'showOverwriteConfirmation'],
+    });
+    if (r.canceled || !r.filePath) return { ok: false, canceled: true, message: '已取消' };
+
+    try {
+      lg.flush();
+      const snapshot = {
+        exportedAt: new Date().toISOString(),
+        note: '导出时日志仍在记录，此后的数据不在本包内；原始流格式见 README.txt',
+        ...lg.stats(),
+      };
+      // 同步写盘 + 同步读取：导出期间日志不会变化，ZIP 天然是一致快照
+      const outcome = zipDirectoryToFile(lg.dir, `${r.filePath}.part`, [
+        {
+          name: 'snapshot.json',
+          data: Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, 'utf8'),
+        },
+      ]);
+      await fs.rename(`${r.filePath}.part`, r.filePath);
+      console.log(`[log] 已导出 ${outcome.files.length} 个文件 → ${r.filePath} (${outcome.bytes} B)`);
+      lg.event('info', 'log-export', {
+        file: r.filePath,
+        files: outcome.files.length,
+        bytes: outcome.bytes,
+      });
+      return { ok: true, message: `${outcome.files.length} 个文件`, bytes: outcome.bytes };
+    } catch (err) {
+      await fs.rm(`${r.filePath}.part`, { force: true }).catch(() => undefined);
+      lg.error('log-export-failed', { message: (err as Error).message });
+      return { ok: false, message: `导出失败：${(err as Error).message}` };
     }
   });
 
@@ -117,11 +211,12 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
     if (boatArmed) return { ok: false, message: '船端已解锁/急停中，请先撤防' };
     if (!file) return { ok: false, message: '未选择固件包' };
 
+    rt.log?.event('info', 'fw-update-start', { file });
     const outcome = await runOta({
       host: st.host,
       port: rt.cfg.ota.port,
       file,
-      onEvent: (ev) =>
+      onEvent: (ev) => {
         send('evt:fw', {
           phase: ev.phase,
           received: ev.received,
@@ -129,7 +224,18 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
           message: ev.message,
           done: ev.phase === 'done' || ev.phase === 'error',
           ok: ev.phase === 'done',
-        }),
+        });
+        rt.log?.event('info', 'fw-update-progress', {
+          phase: ev.phase,
+          received: ev.received,
+          total: ev.total,
+          message: ev.message,
+        });
+      },
+    });
+    rt.log?.event(outcome.ok ? 'info' : 'error', 'fw-update-done', {
+      ok: outcome.ok,
+      message: outcome.message,
     });
     return { ok: outcome.ok, message: outcome.message };
   });

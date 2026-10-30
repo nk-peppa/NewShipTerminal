@@ -47,8 +47,8 @@ npm start         # 另开一格
 开发自检：
 
 ```powershell
-npm test          # 协议黄金帧 / CRC / 分片 / zlib（7 项）
-npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超时归零（12 项）
+npm test          # 协议黄金帧 / CRC / 分片 / zlib + 会话日志格式（12 项）
+npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超时归零 + 日志落盘（17 项）
 ```
 
 > npm 11 会拦截 postinstall。若 `node_modules\electron\dist\electron.exe` 不存在：
@@ -65,6 +65,8 @@ npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超
 | `--python <path>` | 指定 Python 解释器 |
 | `--ota-port <n>` | 固件更新端口，默认 9530 |
 | `--no-window` | 无界面运行（只跑链路与算法，便于 CI/自检） |
+| `--no-log` | 关闭会话日志（默认启动即自动记录） |
+| `--log-dir <path>` | 指定日志根目录（默认 `%APPDATA%\<应用名>\logs`） |
 | 无参数 | **实机模式**：自动发现 + 9527/9530 |
 
 环境变量：`USV_DEBUG=1` 每秒打印链路统计与渲染进程诊断；`USV_SHOT=<png>` 启动 2.5 s 后自截图。
@@ -73,20 +75,22 @@ npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超
 
 ```
 src/shared/   protocol.ts（协议 v1 + Scan2D）、api.ts（IPC 契约）
-src/main/     index.ts / config.ts / link / safety / ipc / algo
+src/main/     index.ts / config.ts / link / safety / ipc / algo / log
 src/preload/  contextBridge 白名单
 src/renderer/ index.html / main.ts / radar.ts / style.css
-test/         协议单测（node:test）
+test/         协议 + 会话日志单测（node:test）
 tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ algo-sidecar.py / copy-assets.mjs
               slam-export-check.cjs（导出 ZIP 自检）/ package-release.mjs（打发布包）
 ```
 
-## 已验证（2026-10-27）
+## 已验证（2026-10-30 更新）
 
 | 项 | 结果 |
 |---|---|
 | 协议单测 | 7/7 通过（含 `protocol.md` 黄金帧） |
-| 端到端自检 | 12/12 通过（50Hz、未解锁不输出、解锁 30% / 舵 15°、急停、UI 500ms 超时归零） |
+| 会话日志单测 | 5/5 通过（CSV/JSONL 内容、原始流分片、保留策略、ZIP 结构 + CRC） |
+| 端到端自检 | 17/17 通过（原 12 项 + STATUS/CMD/SCAN 全量落盘、原始流可还原且 CRC 0） |
+| 日志 ZIP 实导 | 经 PowerShell `Expand-Archive` 反向验证：11 个文件、164 帧原始数据可还原 |
 | SLAM 导出 | 22/22 通过（真仿真 + 真侧车，ZIP 经 `Expand-Archive` 反向验证） |
 | UI 实跑 | 假船端 450 点 @9.2 圈/s，雷达 PPI、状态卡、SLAM 位姿均正常 |
 | Python 侧车 | `TRACKING`，累计处理 18 圈，重启 0 次 |
@@ -117,6 +121,62 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 
 自检：`npm run slam:export`（真仿真 + 真侧车 + 真 ZIP，并用 PowerShell 的
 `Expand-Archive` 反向验证 ZIP 合法，共 22 项）。
+
+## 会话日志（debug / 实验原始数据）
+
+**启动即自动记录**，不需要手动开始。每次运行一个目录：
+
+```
+%APPDATA%\usv-terminal\logs\session-YYYYMMDD-HHmmss\        （开发树）
+%APPDATA%\USV Terminal\logs\session-YYYYMMDD-HHmmss\        （发布包）
+```
+
+右栏「日志」段实时显示大小 / 行数，并可**打开目录**或**导出日志**（ZIP）。
+默认保留最近 10 次会话，原始流每 128 MiB 自动分片；`--no-log` 关闭，
+`--log-dir <path>` 可把根目录指到移动硬盘。
+
+| 文件 | 内容 |
+|---|---|
+| `meta.json` | 启动信息：版本、Electron/Node、平台、完整配置、build-info |
+| `client.jsonl` | 运行事件：链路状态 1Hz、UI 解锁/急停、OTA、算法健康与 stderr、异常 |
+| `status.csv` | 船端 STATUS 全量 **50Hz**（不受 UI 20Hz 限速影响），含 boat_ms 与全部标志位 |
+| `cmd.csv` | 实际下发 CMD 全量 50Hz（含最终油门/舵角与 ARM/ESTOP 位） |
+| `ui.csv` | 渲染进程原始指令 30Hz（归一化 −1..1，未过安全阀，用于区分「没操作」与「被归零」） |
+| `scan.csv` | 每圈点云摘要：点数、编码、质量上限、最小/最大距离、圈号与圈率 |
+| `pose.csv` | SLAM 位姿 ~10Hz（x/y/yaw、status、rmse、inlier） |
+| `rx.NNN.bin` | 收到的**原始 TCP 字节流**（连解码失败的帧也原样保留） |
+| `tx.NNN.bin` | 发出的原始帧（HELLO / PING / CMD / TIME_SYNC） |
+| `summary.json` | 正常退出时的统计；`README.txt` 为随包携带的格式说明 |
+
+要点：
+
+- 原始流记录格式（小端）：`u32 length | f64 epoch_ms | 原始字节`。
+  按此切分后直接喂给 `src/shared/protocol.ts` 的 `FrameParser` 即可还原帧；
+  有了时间戳，还能分析抖动、丢帧和延迟：
+
+  ```js
+  const fs = require('node:fs');
+  const { FrameParser } = require('./dist/shared/protocol.js'); // npm run build 之后
+  const buf = fs.readFileSync('rx.000.bin');
+  const parser = new FrameParser();
+  for (let off = 0; off + 12 <= buf.length; ) {
+    const len = buf.readUInt32LE(off);
+    const recvMs = buf.readDoubleLE(off + 4);
+    for (const frame of parser.feed(buf.subarray(off + 12, off + 12 + len))) {
+      // frame.type: 0x81 STATUS / 0x82 SCAN / 0x85 SCAN2 ...
+      // frame.payload 交给 unpackStatus / unpackScan / unpackScan2
+    }
+    off += 12 + len;
+  }
+  ```
+- 全部用**同步写盘**：进程崩溃/断电前已写内容不丢；导出 ZIP 与日志写入在
+  同一事件循环里串行，因此导出的包天然是一致快照（`snapshot.json` 记录导出时状态）。
+  因此日志目录应放在**本地盘**，不要指到 OneDrive/网络盘（同步客户端锁文件会拖慢控制环）。
+- 日志导出用流式 **store ZIP**（不压缩，避免把上百 MB 原始帧读进内存或卡住主进程），
+  先写 `.part` 再改名，失败不留半截文件。
+- 保存/导出对话框打开期间与 SLAM 保存相同：摇杆被忽略、油门舵角归零。
+- 日志模块不依赖 Electron，`npm test` 直接覆盖格式与 ZIP；`npm run smoke`
+  额外验证真实链路 ⇄ 日志落盘。
 
 ## 打包发布
 

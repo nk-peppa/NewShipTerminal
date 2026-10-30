@@ -63,6 +63,10 @@ const el = {
   saveSlamBtn: $<HTMLButtonElement>('save-slam-btn'),
   saveSlamKey: $('save-slam-key'),
   slamIo: $('slam-io'),
+  logInfo: $('log-info'),
+  logOpenBtn: $<HTMLButtonElement>('log-open-btn'),
+  logSaveBtn: $<HTMLButtonElement>('log-save-btn'),
+  logIo: $('log-io'),
   telemetry: $('telemetry'),
   telemetryScroll: $('telemetry-scroll'),
   menuBtn: $<HTMLButtonElement>('menu-btn'),
@@ -216,7 +220,7 @@ function pollPad(): void {
   const y = pad.axes[1] ?? 0;
   // 菜单模式下左摇杆用于选控件；保存对话框弹出期间也一样，
   // 否则原生对话框挡住窗口时摇杆仍在改油门，看不到屏幕很危险
-  if (padMenu.isActive || saveBusy) {
+  if (padMenu.isActive || modalBusy) {
     padThrottle = 0;
     padRudder = 0;
   } else {
@@ -768,11 +772,13 @@ function clearMap(): void {
 }
 el.clearMapBtn.addEventListener('click', clearMap);
 
+// 原生保存对话框打开期间禁止摇杆驱动（saveSlam / saveLog 共用）
+let modalBusy = false;
+
 // 保存 SLAM 数据（鼠标 / 手柄 View 键）：走主进程的保存对话框
-let saveBusy = false;
 async function saveSlam(): Promise<void> {
-  if (saveBusy) return;
-  saveBusy = true;
+  if (modalBusy) return;
+  modalBusy = true;
   el.saveSlamBtn.disabled = true;
   el.slamIo.textContent = '正在准备导出…';
   try {
@@ -787,12 +793,99 @@ async function saveSlam(): Promise<void> {
     }
     el.slamIo.className = `mono ${r.ok ? 't-ok' : r.canceled ? 'muted' : 't-bad'}`;
   } finally {
-    saveBusy = false;
+    modalBusy = false;
     el.saveSlamBtn.disabled = false;
   }
 }
 el.saveSlamBtn.addEventListener('click', () => void saveSlam());
 el.saveSlamKey.innerHTML = xboxIcon('view', { size: 24, title: 'View 键：保存 SLAM 数据' });
+
+/* ---------------- 会话日志 ---------------- */
+
+function fmtBytes(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function fmtDuration(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const mm = String(m).padStart(2, '0');
+  const ss = String(sec).padStart(2, '0');
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}
+
+/** 每 2 秒轮询一次日志状态（只读统计，不影响日志写入） */
+async function refreshLog(): Promise<void> {
+  try {
+    const s = await window.usv.getLogStatus();
+    const usable = s.enabled && !s.error;
+    el.logOpenBtn.disabled = !s.dir;
+    el.logSaveBtn.disabled = !usable;
+    el.logInfo.title = s.dir ?? '';
+    if (s.error) {
+      el.logInfo.textContent = `记录失败：${s.error}`;
+      el.logInfo.className = 'mono t-bad';
+      return;
+    }
+    if (!s.enabled || !s.dir) {
+      el.logInfo.textContent = s.dir ? '已停止记录' : '日志已关闭（--no-log）';
+      el.logInfo.className = 'mono muted';
+      return;
+    }
+    el.logInfo.className = 'mono muted';
+    el.logInfo.textContent =
+      `记录中 ${fmtDuration(s.durationMs)} · ${fmtBytes(s.bytes)} · ` +
+      `事件 ${s.events} · STATUS ${s.statusRows} · 点云 ${s.scanRows} 圈`;
+  } catch {
+    el.logInfo.textContent = '日志状态读取失败';
+    el.logInfo.className = 'mono t-bad';
+  }
+}
+
+async function openLogDir(): Promise<void> {
+  try {
+    const r = await window.usv.openLogDir();
+    el.logIo.textContent = r.ok ? `已打开：${r.message}` : r.message;
+    el.logIo.className = `mono ${r.ok ? 'muted' : 't-bad'}`;
+  } catch (err) {
+    el.logIo.textContent = `打开失败：${(err as Error).message}`;
+    el.logIo.className = 'mono t-bad';
+  }
+}
+el.logOpenBtn.addEventListener('click', () => void openLogDir());
+
+async function saveLog(): Promise<void> {
+  if (modalBusy) return;
+  modalBusy = true;
+  el.logSaveBtn.disabled = true;
+  el.logIo.textContent = '正在打包日志…';
+  try {
+    const r = await window.usv.saveLog();
+    if (r.canceled) {
+      el.logIo.textContent = '已取消导出';
+    } else if (r.ok) {
+      el.logIo.textContent = `已导出 ${r.message}（${fmtBytes(r.bytes ?? 0)}）`;
+    } else {
+      el.logIo.textContent = r.message;
+    }
+    el.logIo.className = `mono ${r.ok ? 't-ok' : r.canceled ? 'muted' : 't-bad'}`;
+  } catch (err) {
+    el.logIo.textContent = `导出失败：${(err as Error).message}`;
+    el.logIo.className = 'mono t-bad';
+  } finally {
+    modalBusy = false;
+    el.logSaveBtn.disabled = false;
+    void refreshLog();
+  }
+}
+el.logSaveBtn.addEventListener('click', () => void saveLog());
+
+void refreshLog();
+window.setInterval(() => void refreshLog(), 2000);
 setupOverlayScrollbar();
 
 window.usv.getConfig().then((cfg) => {
