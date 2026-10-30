@@ -1,9 +1,13 @@
 # PR-Agent 配置：只需覆盖默认值，其余保持内置默认。
 # 模型清单见 https://api-docs.deepseek.com/quick_start/pricing
+# 现役模型：deepseek-flash（旧名 deepseek-v4-flash 已退役但仍作别名）、deepseek-v4-pro
 
 [config]
-model = "deepseek/deepseek-v4-flash"
+model = "deepseek/deepseek-flash"
 fallback_models = ["deepseek/deepseek-v4-pro"]
+# flash + 最高推理档；可选 none/minimal/low/medium/high/xhigh/max
+reasoning_effort = "max"
+additional_reasoning_effort_models = ["deepseek/deepseek-flash"]
 response_language = "en-US"
 max_model_tokens = 32000        # 单次输入上限，防止大 PR 烧钱
 custom_model_max_tokens = 32000 # 新模型不在 PR-Agent 内置表里时用它兜底

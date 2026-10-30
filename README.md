@@ -28,8 +28,8 @@
 [PR-Agent](https://github.com/the-pr-agent/pr-agent) 调 DeepSeek：PR 打开、重新打开、转为可审查、
 以及每次推送都会自动审查；PR 里发 `/review`、`/describe`、`/ask` 可手动触发。
 
-- 模型在 [.pr_agent.toml](.pr_agent.toml) 里配：默认 `deepseek/deepseek-v4-flash`，换成
-  `deepseek/deepseek-v4-pro` 质量更好、单价约 4 倍。
+- 模型在 [.pr_agent.toml](.pr_agent.toml) 里配：默认 `deepseek/deepseek-flash` + `reasoning_effort = "max"`，
+  换成 `deepseek/deepseek-v4-pro` 质量更好、单价约 4 倍。
 - Key 存在仓库 secret `PR_AGENT_API_KEY`（Settings → Secrets and variables → Actions）。
 - 按 token 计费，一次审查约 $0.01–0.05，与审查次数无关；`max_model_tokens` 已限流。
 - 不想被审查：给 PR 打 `skip-ai-review` 标签。来自 fork 的 PR 拿不到 secret，不会审查。
