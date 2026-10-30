@@ -377,7 +377,19 @@ export class SessionLogger {
       /* 新文件 */
     }
     const fd = fs.openSync(file, 'a');
-    if (size === 0) this.append(fd, `${header}\n`);
+    if (size === 0) {
+      // 表头写失败时 fd 还没交回构造函数，必须自己关掉，否则整个进程都会漏它
+      try {
+        this.append(fd, `${header}\n`);
+      } catch (err) {
+        try {
+          fs.closeSync(fd);
+        } catch {
+          /* 忽略 */
+        }
+        throw err;
+      }
+    }
     return fd;
   }
 
