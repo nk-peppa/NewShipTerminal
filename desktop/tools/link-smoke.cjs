@@ -7,9 +7,15 @@
  * 用法：npm run smoke
  */
 
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
+
 const { startSim } = require('./sim-boat.cjs');
+const { FrameParser } = require('../dist/shared/protocol.js');
 const { TcpLink } = require('../dist/main/link/tcpLink.js');
 const { SafetySupervisor } = require('../dist/main/safety/supervisor.js');
+const { SessionLogger } = require('../dist/main/log/sessionLog.js');
 
 const TCP_PORT = 19527;
 const UDP_PORT = 19528;
@@ -39,15 +45,29 @@ async function main() {
     getCommand: () => safety.tick(),
   });
 
+  // 会话日志：与主进程同样的接法（原始字节 + 解码后 CSV）
+  const logBase = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-smoke-log-'));
+  const log = new SessionLogger({ baseDir: logBase });
+  let logCmds = 0;
+  link.setWireTap((dir, data, atMs) => log.wire(dir, data, atMs));
+  link.on('cmd', (cmd) => {
+    logCmds++;
+    log.command(cmd);
+  });
+
   let statuses = 0;
   let scans = 0;
   let lastScanCount = 0;
   let crcErr = 0;
-  link.on('status', () => statuses++);
-  link.on('scan', ({ scan }) => {
+  link.on('status', (st) => {
+    statuses++;
+    log.status(st);
+  });
+  link.on('scan', ({ scan, recvMs }) => {
     scans++;
     lastScanCount = scan.count;
     crcErr = link.state().crcErrors;
+    log.scan(scan, recvMs);
   });
 
   console.log('[smoke] 启动链路…');
@@ -88,7 +108,51 @@ async function main() {
 
   safety.setArm(false);
   link.stop();
+  const logStats = log.close('smoke');
   sim.stop();
+
+  const countRows = (name) =>
+    Math.max(0, fs.readFileSync(path.join(log.dir, name), 'utf8').trim().split('\n').length - 1);
+  check(
+    '日志 STATUS 全量落盘',
+    countRows('status.csv') === logStats.statusRows && logStats.statusRows > 20,
+    `rows=${logStats.statusRows}`,
+  );
+  check(
+    '日志 CMD 全量落盘',
+    logStats.cmdRows === logCmds && logStats.cmdRows > 20,
+    `rows=${logStats.cmdRows}/${logCmds}`,
+  );
+  check(
+    '日志 SCAN 摘要落盘',
+    countRows('scan.csv') === logStats.scanRows && logStats.scanRows >= 5,
+    `rows=${logStats.scanRows}`,
+  );
+  check('日志事件 JSONL 存在', fs.existsSync(path.join(log.dir, 'client.jsonl')));
+  check(
+    'STATUS 无丢帧（船钟连续）',
+    logStats.statusGaps === 0,
+    `gaps=${logStats.statusGaps} max=${logStats.maxStatusGapMs}ms`,
+  );
+
+  // 原始流反向还原：FrameParser 吃回去不能有 CRC 错
+  const parser = new FrameParser();
+  let rawFrames = 0;
+  for (const name of fs.readdirSync(log.dir).filter((n) => /^rx\.\d{3}\.bin$/.test(n))) {
+    const buf = fs.readFileSync(path.join(log.dir, name));
+    let off = 0;
+    while (off + 12 <= buf.length) {
+      const len = buf.readUInt32LE(off);
+      rawFrames += parser.feed(buf.subarray(off + 12, off + 12 + len)).length;
+      off += 12 + len;
+    }
+  }
+  check(
+    '日志原始流可还原帧',
+    rawFrames >= 20 && parser.crcErrors === 0,
+    `frames=${rawFrames} crc=${parser.crcErrors}`,
+  );
+  fs.rmSync(logBase, { recursive: true, force: true });
 
   console.log(`\n[smoke] 结果: ${failures === 0 ? '全部通过' : `${failures} 项失败`}`);
   process.exit(failures === 0 ? 0 : 1);

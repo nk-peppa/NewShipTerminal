@@ -142,6 +142,41 @@ export interface SlamSaveView {
   bytes?: number;
 }
 
+/** 保存会话日志的结果（字段与 SLAM 保存一致，单独命名便于阅读） */
+export interface LogSaveView {
+  ok: boolean;
+  canceled?: boolean;
+  message: string;
+  bytes?: number;
+}
+
+/** 本次运行日志的实时状态 */
+export interface LogStatusView {
+  enabled: boolean;
+  /** 会话目录；日志关闭时为 null */
+  dir: string | null;
+  startedAt: number | null;
+  /** 已记录时长（ms），面板用来显示 00:16 这种运行时长 */
+  durationMs: number;
+  /** 已写入字节数（含原始帧记录头） */
+  bytes: number;
+  events: number;
+  statusRows: number;
+  /** STATUS 船钟跳变次数：>0 表示现场确实丢了 50Hz 帧 */
+  statusGaps: number;
+  /** 最大一次 STATUS 船钟间隔（ms），正常 50Hz 约 20 */
+  maxStatusGapMs: number;
+  cmdRows: number;
+  /** 渲染进程上报的原始指令行数 */
+  uiRows: number;
+  scanRows: number;
+  poseRows: number;
+  rxBytes: number;
+  txBytes: number;
+  /** 写盘失败原因；正常为 null */
+  error: string | null;
+}
+
 export interface UsvApi {
   sendCmd(throttle: number, rudder: number): void;
   setArm(on: boolean): void;
@@ -155,6 +190,12 @@ export interface UsvApi {
   clearMap(): void;
   /** 弹出保存对话框，把 SLAM 地图与轨迹导出成 ZIP */
   saveSlam(): Promise<SlamSaveView>;
+  /** 本次会话的日志状态（--no-log 时 enabled=false） */
+  getLogStatus(): Promise<LogStatusView>;
+  /** 在资源管理器里打开本次会话的日志目录 */
+  openLogDir(): Promise<{ ok: boolean; message: string }>;
+  /** 弹出保存对话框，把会话日志导出成 ZIP（含船端原始帧） */
+  saveLog(): Promise<LogSaveView>;
   /** 把包上传到当前连接的船端 */
   updateFirmware(file: string): Promise<{ ok: boolean; message: string }>;
   onFirmware(cb: (s: FirmwareStateView) => void): () => void;

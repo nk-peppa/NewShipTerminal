@@ -71,6 +71,10 @@ export interface ReceivedScan {
   recvMs: number;
 }
 
+export type WireDirection = 'rx' | 'tx';
+/** 原始收/发字节旁路回调（会话日志用）；回调里不要抛异常 */
+export type WireTap = (dir: WireDirection, data: Buffer, atMs: number) => void;
+
 /**
  * TCP 控制链路：50Hz 下发 CMD、解析 STATUS/SCAN、断线自动重连。
  * 发送节拍用单调时钟自校正，不允许 setTimeout 漂移累积。
@@ -97,6 +101,7 @@ export class TcpLink extends EventEmitter {
   private rxBytes = 0;
   private rxBytesPerSec = 0;
   private hello: HelloAck | null = null;
+  private wireTap: WireTap | null = null;
 
   /* ---- 时钟同步（NTP 四时间戳法） ---- */
   private pingTimer: NodeJS.Timeout | null = null;
@@ -108,6 +113,27 @@ export class TcpLink extends EventEmitter {
 
   constructor(private readonly opts: LinkOptions) {
     super();
+  }
+
+  /** 旁路抓包：所有收/发字节原样交给回调，供会话日志落盘 */
+  setWireTap(tap: WireTap | null): void {
+    this.wireTap = tap;
+  }
+
+  private tap(dir: WireDirection, data: Buffer): void {
+    if (!this.wireTap) return;
+    try {
+      this.wireTap(dir, data, Date.now());
+    } catch (err) {
+      // 日志失败不能影响控制链路
+      console.warn(`[link] wire tap 失败: ${(err as Error).message}`);
+    }
+  }
+
+  /** 发送统一入口：写 socket + 抓包 */
+  private writeFrame(socket: net.Socket, frame: Buffer): void {
+    socket.write(frame);
+    this.tap('tx', frame);
   }
 
   /** 切换目标船端（自动发现选船时使用） */
@@ -185,7 +211,7 @@ export class TcpLink extends EventEmitter {
     const t1 = Date.now();
     this.pendingPing = { t1 };
     try {
-      s.write(buildFrame(T_PING, this.nextSeq(), packPing(t1)));
+      this.writeFrame(s, buildFrame(T_PING, this.nextSeq(), packPing(t1)));
     } catch {
       this.pendingPing = null;
     }
@@ -196,7 +222,7 @@ export class TcpLink extends EventEmitter {
     const s = this.socket;
     if (!this.connected || !s || s.destroyed) return false;
     try {
-      s.write(buildFrame(T_TIME_SYNC, this.nextSeq(), Buffer.alloc(0)));
+      this.writeFrame(s, buildFrame(T_TIME_SYNC, this.nextSeq(), Buffer.alloc(0)));
       return true;
     } catch {
       return false;
@@ -263,7 +289,7 @@ export class TcpLink extends EventEmitter {
       this.hello = null;
       // 先握手：声明 v2 + SCAN2/OTA 能力；旧固件会忽略未知帧，行为回落到 v1
       try {
-        socket.write(buildFrame(T_HELLO, 0, packHello()));
+        this.writeFrame(socket, buildFrame(T_HELLO, 0, packHello()));
       } catch (e) {
         this.lastError = e instanceof Error ? e.message : String(e);
       }
@@ -288,6 +314,8 @@ export class TcpLink extends EventEmitter {
 
   private onData(chunk: Buffer): void {
     this.rxBytes += chunk.length;
+    // 抓包必须在解析前：解析失败/丢帧的原始字节同样值得留档
+    this.tap('rx', chunk);
     let frames;
     try {
       frames = this.parser.feed(chunk);
@@ -388,8 +416,9 @@ export class TcpLink extends EventEmitter {
     const cmd = this.opts.getCommand();
     const frame = buildFrame(T_CMD, this.seq++, packCmd(cmd.throttleX10, cmd.servosX10, cmd.flags));
     try {
-      socket.write(frame);
+      this.writeFrame(socket, frame);
       this.txCount++;
+      this.emit('cmd', cmd);
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
     }

@@ -20,7 +20,7 @@
 ```
 ┌──────────────────── Renderer (Chromium) ────────────────────┐
 │  UI：PPI 雷达 / 仪表 / 地图 / 设置                            │
-│  · 30Hz 下发归一化指令（兼心跳）                              │
+│  · ~31Hz 下发归一化指令（定时器驱动，不依赖 rAF）              │
 │  · 60fps 绘制，只读订阅，绝不直接持有 socket                   │
 └───────────────▲──────────────────────────┬──────────────────┘
                 │ contextBridge（白名单）   │ 二进制 TypedArray
@@ -29,7 +29,7 @@
 │  Link       TCP 9527，50Hz 自校正节拍，STATUS/SCAN 解析        │
 │  Safety     ARM / ESTOP / UI 500ms 心跳 / 退出补发安全帧       │
 │  Discovery  UDP 9528 广播与探测，多船切换                      │
-│  Record     帧日志落盘 + 回放（规划中）                        │
+│  Log        会话日志：原始帧 + CSV + 事件落盘（回放待补）        │
 └───────────────┬─────────────────────────────────────────────┘
                 │ stdio JSONL（v0）
 ┌───────────────▼─────────────────────────────────────────────┐
@@ -79,12 +79,14 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 
 | 通道 | 方向 | 频率 | 内容 |
 |---|---|---|---|
-| `ui:cmd` | 渲染 → 主 | 30Hz | `{throttle, rudder}` 归一化 −1..1 |
+| `ui:cmd` | 渲染 → 主 | ~31Hz | `{throttle, rudder}` 归一化 −1..1；**定时器驱动**（`setInterval` + `backgroundThrottling:false`），窗口最小化时也不断流 |
 | `ui:arm` / `ui:estop` | 渲染 → 主 | 事件 | 布尔 |
 | `evt:status` | 主 → 渲染 | 20Hz | `StatusView` |
 | `evt:scan` | 主 → 渲染 | ~10Hz | `ScanView`（TypedArray） |
 | `evt:link` / `evt:ships` | 主 → 渲染 | 1Hz / 变更 | 链路与在场船只 |
 | `evt:pose` / `evt:algo` | 主 → 渲染 | 10Hz / 1Hz | SLAM 位姿与算法健康 |
+| `log:info` | 渲染 → 主 | 2s 轮询 | 会话日志大小 / 行数 / 失败原因 |
+| `log:open` / `log:save` | 渲染 → 主 | 事件 | 打开日志目录 / 导出 ZIP |
 
 ### 3.4 Python 侧车协议（v0）
 
@@ -103,7 +105,7 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 | 层 | 机制 | 参数 |
 |---|---|---|
 | UI | 摇杆回中才允许解锁；切后台/关闭前补发归零 | 阈值 0.15 |
-| Main | Supervisor：未解锁 / 急停 / UI 超时 → 归零且不带 ARM 位 | `uiTimeoutMs = 500` |
+| Main | Supervisor：未解锁 / 急停 / UI 超时 → 归零且不带 ARM 位 | `uiTimeoutMs = 500`（UI 心跳 ~31Hz，窗口最小化也不断） |
 | Main | 退出前保持连接 600ms，连续发安全帧 | 0.6s |
 | 链路 | 断线自动重连；断线期间不写 socket | 2s 退避 |
 | 船端 | 300ms 看门狗 → 油门 0 + 舵回中 | 固件参数 |
@@ -116,7 +118,7 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 desktop/
 ├─ src/
 │  ├─ shared/       protocol.ts（协议编解码 + Scan2D）、api.ts（IPC 契约类型）
-│  ├─ main/         index.ts / config.ts / link / safety / ipc / algo
+│  ├─ main/         index.ts / config.ts / link / safety / ipc / algo / log
 │  ├─ preload/      contextBridge 白名单
 │  └─ renderer/     index.html / main.ts / radar.ts / style.css
 ├─ test/            黄金帧与解析器单测（node:test）
@@ -128,9 +130,9 @@ desktop/
 
 | 命令 | 作用 |
 |---|---|
-| `npm run build` | tsc（主进程/预加载）+ esbuild（渲染）+ 复制静态资源 |
-| `npm test` | 协议黄金帧 + 分片 + CRC + zlib |
-| `npm run smoke` | 假船端 ⇄ 真实链路：50Hz、未解锁不输出、解锁、急停、UI 超时 |
+| `npm run build` | tsc（主进程/预加载 + 渲染进程类型检查）+ esbuild（渲染）+ 复制静态资源 |
+| `npm test` | 协议黄金帧 + 分片 + CRC + zlib + 会话日志格式 |
+| `npm run smoke` | 假船端 ⇄ 真实链路：50Hz、未解锁不输出、解锁、急停、UI 超时、日志落盘 |
 | `npm start` | 启动应用（需先 `npm run sim` 或接实船） |
 | `npm run sim` | 只启动假船端 |
 
@@ -188,6 +190,7 @@ desktop/
 |---|---|---|
 | 协议 | CRC 标准向量、CMD/STATUS/SCAN 黄金帧、任意分片、CRC 错误恢复、zlib | ✅ `npm test` |
 | 链路 | 50Hz 下发、未解锁不输出、解锁、急停、UI 超时归零、SCAN 解码 | ✅ `npm run smoke` |
+| 日志 | STATUS/CMD/SCAN 行数、原始流可还原、CRC 0、ZIP 可解压 | ✅ `npm test` / `npm run smoke` |
 | 算法 | 崩溃重启、超时无位姿告警、输入输出契约校验 | ⬜ 待补 |
 | 回放 | 同一份录制数据离线复跑，结果可复现 | ⬜ 待补 |
 | 打包 | 安装包、免安装目录、签名 | ⬜ 待补 |
@@ -200,7 +203,7 @@ desktop/
 | 阶段 | 交付 |
 |---|---|
 | M1（本次） | 骨架：Electron + 协议包 + 链路 + 安全 + 假船端 + 自检 |
-| M2 | 录制/回放；STATUS 全字段 UI；配置持久化 |
+| M2 | 会话日志/原始帧落盘（已完成）；离线回放；STATUS 全字段 UI；配置持久化 |
 | M3 | SLAM 接入：Python 侧车实装、位姿/地图显示 |
 | M4 | 避障与告警（点云扇区、最近障碍、分级告警） |
 | M5 | 打包分发（electron-builder / 免安装目录）、日志与崩溃收集 |
