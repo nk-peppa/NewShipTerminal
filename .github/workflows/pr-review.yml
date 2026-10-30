@@ -34,6 +34,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
+      # PR-Agent 从工作区根目录读取 .pr_agent.toml，缺了这步它会退回内置默认值（gpt 模型 + dummy key）
+      - name: Checkout
+        uses: actions/checkout@v4
+
       # 固定版本：不要改成 @main，否则上游一次提交就能在你仓库里跑任意代码
       - name: Run PR-Agent
         uses: the-pr-agent/pr-agent@v0.49.0
