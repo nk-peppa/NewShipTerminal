@@ -1,0 +1,52 @@
+# PR-Agent 配置：只需覆盖默认值，其余保持内置默认。
+# 模型清单见 https://api-docs.deepseek.com/quick_start/pricing
+
+[config]
+model = "deepseek/deepseek-v4-flash"
+fallback_models = ["deepseek/deepseek-v4-pro"]
+response_language = "en-US"
+max_model_tokens = 32000        # 单次输入上限，防止大 PR 烧钱
+custom_model_max_tokens = 32000 # 新模型不在 PR-Agent 内置表里时用它兜底
+
+[pr_reviewer]
+num_max_findings = 5
+inline_key_issues = true        # 结论贴到具体代码行
+persistent_comment = true       # 重跑时更新同一条评论，不刷屏
+require_security_review = true
+require_tests_review = true
+require_score_review = false
+extra_instructions = """
+Repository: NewShipTerminal — unmanned surface vessel terminal.
+- desktop/: Electron + TypeScript (main / preload / renderer, shared protocol code)
+- desktop/algo/: Python SLAM and algorithms
+- firmware/: Rust vessel-side firmware (protocol v1/v2 + OTA)
+- spec/: single source of truth for protocol and contracts
+
+Report only defects that matter:
+1. Correctness: wrong logic, null/undefined deref, out-of-bounds, integer overflow,
+   resource leaks, races, unawaited promises, swallowed exceptions.
+2. Security: command injection, path traversal, unsafe deserialization, leaked secrets;
+   Electron nodeIntegration / contextIsolation / preload exposure / unvalidated IPC input;
+   unsound length or CRC handling in firmware.
+3. Protocol and compatibility: mismatch with spec/ (frame layout, CRC16-CCITT-FALSE,
+   units, CMD/STATUS rate, OTA versioning); breaking changes to persisted formats.
+4. Performance and stability: blocking the Electron main thread, unbounded memory growth,
+   obvious O(n^2), hot-path allocations.
+5. Missing tests for changes that touch protocol, safety, or concurrency.
+
+Never report style, naming, formatting, or comment-only nits.
+Every finding must point at a line that exists in the diff.
+"""
+
+[pr_description]
+publish_description_as_comment = true
+add_original_user_description = true
+
+[github_action_config]
+auto_review = true
+auto_describe = true
+auto_improve = false            # 需要 contents: write，本仓库不开放
+handle_push_trigger = true      # PR 有新提交时重跑
+push_commands = ["/review"]
+push_trigger_ignore_bot_commits = true
+fail_on_tool_errors = false     # 模型偶发输出异常时不把 Actions 染红

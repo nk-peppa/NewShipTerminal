@@ -1,0 +1,44 @@
+name: PR Review (DeepSeek)
+
+on:
+  pull_request:
+    types: [opened, reopened, ready_for_review, synchronize]
+  issue_comment:
+    types: [created]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+concurrency:
+  group: pr-agent-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    # 同仓库 PR + 非草稿 + 无 skip-ai-review 标签时自动审查；
+    # PR 里以 / 开头的评论（如 /review、/describe、/ask）按需触发。
+    # 来自 fork 的 PR 拿不到 secret，直接跳过。
+    if: >
+      github.event.sender.type != 'Bot' &&
+      (
+        (github.event_name == 'issue_comment' &&
+         github.event.issue.pull_request &&
+         startsWith(github.event.comment.body, '/')) ||
+        (github.event_name == 'pull_request' &&
+         github.event.pull_request.draft == false &&
+         github.event.pull_request.head.repo.full_name == github.repository &&
+         !contains(github.event.pull_request.labels.*.name, 'skip-ai-review'))
+      )
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      # 固定版本：不要改成 @main，否则上游一次提交就能在你仓库里跑任意代码
+      - name: Run PR-Agent
+        uses: the-pr-agent/pr-agent@v0.49.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # PR-Agent 用 DEEPSEEK.KEY 取 key；DEEPSEEK_API_KEY 供底层 LiteLLM 兜底
+          DEEPSEEK.KEY: ${{ secrets.PR_AGENT_API_KEY }}
+          DEEPSEEK_API_KEY: ${{ secrets.PR_AGENT_API_KEY }}
