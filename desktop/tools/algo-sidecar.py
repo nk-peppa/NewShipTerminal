@@ -174,7 +174,10 @@ def handle_scan(msg: Dict[str, Any]) -> None:
 
     now = time.monotonic()
     grid = STATE.slam.grid
-    if now - STATE.last_map_at >= MAP_PERIOD_S:
+    observed = int(grid.observed.sum())
+    # INITIALIZING（或启动失败）时栅格还是空的：按契约不发布地图，
+    # 也不占用限频窗口；reset 的清屏回执走 handle() 里单独的分支。
+    if observed and now - STATE.last_map_at >= MAP_PERIOD_S:
         # 内容指纹：比较总量会在"证据在两个已观测格之间转移"时漏掉变化
         # （例如 [3, -3] → [-3, 3]），这里直接对栅格与观测掩码取摘要，
         # 只在 0.5 s 限频通过后才计算，开销约 1 ms。
@@ -183,7 +186,6 @@ def handle_scan(msg: Dict[str, Any]) -> None:
         if digest != STATE.last_map_digest:
             STATE.last_map_at = now
             STATE.last_map_digest = digest
-            observed = int(grid.observed.sum())
             data = base64.b64encode(png_rgba(grid_rgba(grid))).decode("ascii")
             emit(
                 {
