@@ -11,11 +11,13 @@
  *   会把控制环卡住，日志大了甚至可能让船端 300ms 看门狗触发失联保护。这里按
  *   1 MiB 分块用异步 IO，块之间把事件循环让出去，控制环照常跑。
  *
- * 每个文件在导出开始时取一次 size，只读这么多字节：边录边导时文件还在增长，
- * 按 size 截断保证导出的是「发起导出那一刻的前缀」。同步写的行是一次一条，
+ * 所有文件长度在导出开始**同一拍**里全部取定（snapshotLogFiles，纯同步，
+ * 中间不让出事件循环），之后才异步读盘：边录边导时文件还在增长，按定住的
+ * 长度截断，ZIP 里每个文件都是同一个时刻的前缀。同步写的行是一次一条，
  * 所以这个边界一定落在行尾，不会切出半行。
  */
 
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 
@@ -31,6 +33,25 @@ export interface ZipOutcome {
 
 /** 单次读写的分块大小 */
 const CHUNK_BYTES = 1 << 20;
+
+export interface SnapshotFile {
+  name: string;
+  /** 导出开始那一刻的长度；之后只读这么多字节 */
+  size: number;
+}
+
+/**
+ * 在**同一拍**里定住目录下所有普通文件的长度（纯同步，不让出事件循环）。
+ * 调用方要在拿到它之后再开始异步写 ZIP，否则各文件的截断时刻会差出好几秒，
+ * CSV 里就会出现 rx 原始流里没有的帧，snapshot.json 也会对不上。
+ */
+export function snapshotLogFiles(dir: string): SnapshotFile[] {
+  return fsSync
+    .readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile())
+    .map((e) => ({ name: e.name, size: fsSync.statSync(path.join(dir, e.name)).size }))
+    .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+}
 
 const CRC_TABLE = (() => {
   const t = new Int32Array(256);
@@ -123,13 +144,10 @@ export async function zipDirectoryToFile(
   dest: string,
   extra: ZipExtraEntry[] = [],
   at = new Date(),
+  /** 已经定住的长度表；不传则在这里现取（仍是一拍内完成） */
+  snapshot: SnapshotFile[] = snapshotLogFiles(dir),
 ): Promise<ZipOutcome> {
-  const entries = await fs.readdir(dir, { withFileTypes: true });
-  const names = entries
-    .filter((e) => e.isFile())
-    .map((e) => e.name)
-    .sort();
-  const entryCount = names.length + extra.length;
+  const entryCount = snapshot.length + extra.length;
   if (entryCount > 0xffff) throw new Error(`文件过多（${entryCount}），超出 ZIP 上限`);
 
   const { time, date } = dosDateTime(at);
@@ -173,10 +191,8 @@ export async function zipDirectoryToFile(
   };
 
   try {
-    for (const name of names) {
+    for (const { name, size } of snapshot) {
       const file = path.join(dir, name);
-      // 先定住长度：导出期间日志还在追加，只读这么多就是一致的前缀
-      const size = (await fs.stat(file)).size;
       const fd = await fs.open(file, 'r');
       try {
         await addEntry(name, size, async (emit) => {

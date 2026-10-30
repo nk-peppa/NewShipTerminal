@@ -47,7 +47,7 @@ npm start         # 另开一格
 开发自检：
 
 ```powershell
-npm test          # 协议黄金帧 / CRC / 分片 / zlib + 会话日志格式（20 项）
+npm test          # 协议黄金帧 / CRC / 分片 / zlib + 会话日志格式（21 项）
 npm run smoke     # 假船端 ⇄ 真实链路：50Hz、解锁、急停、UI 超时归零 + 日志落盘（18 项）
 npm run log:50hz  # 真 50Hz 突发压力：收帧 = CSV 行 = 原始流帧，零丢帧（7 项）
 ```
@@ -90,7 +90,7 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 | 项 | 结果 |
 |---|---|
 | 协议单测 | 7/7 通过（含 `protocol.md` 黄金帧） |
-| 会话日志单测 | 8/8 通过（CSV/JSONL 内容、船钟缺口识别、原始流分片、保留策略、ZIP 结构 + CRC、边录边导前缀、初始化失败不漏 fd） |
+| 会话日志单测 | 9/9 通过（CSV/JSONL 内容、船钟缺口识别、原始流分片、保留策略、ZIP 结构 + CRC、边录边导前缀、初始化失败不漏 fd） |
 | 端到端自检 | 18/18 通过（含 STATUS/CMD/SCAN 全量落盘、船钟无缺口、原始流可还原且 CRC 0） |
 | 50Hz 完整性 | 7/7 通过：490 帧收发 1:1、CSV 行数 = 原始流帧数、最大间隔 20ms |
 | 10 分钟满 session | 内存 407–440MB 无泄漏，日志 15.5MB，0 错误；离线回放 5540 帧 TRACKING |
@@ -261,3 +261,4 @@ release/USV-Terminal-<ver>-win32-x64.zip  分发用（约 151 MB）
   只连本地假船端请加 `--host 127.0.0.1`。
 - 实船 `192.168.3.9` 实测：TCP 50Hz STATUS 正常，但 `flags=0x10`（仅「需解锁」），
   `points_last=0`、`scans_total=0` → **船端雷达未上线或未出点**，需在船端查 USB/供电。
+

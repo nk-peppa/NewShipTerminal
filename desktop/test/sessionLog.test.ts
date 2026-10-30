@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 import { ST_ARMED, ST_ESTOP, ST_LIDAR_OK, type Status } from '../src/shared/protocol.js';
-import { crc32Of, zipDirectoryToFile } from '../src/main/log/logArchive.js';
+import { crc32Of, snapshotLogFiles, zipDirectoryToFile } from '../src/main/log/logArchive.js';
 import {
   pruneLogSessions,
   SessionLogger,
@@ -363,18 +363,21 @@ test('日志导出：边录边导只取导出时刻的前缀，且不切出半�
   try {
     for (let i = 0; i < 50; i++) log.status({ ...STATUS, timeMs: 1000 + i * 20 });
 
+    // 先定住长度，再继续写：导出用的必须是定住那一刻的前缀
+    const files = snapshotLogFiles(log.dir);
+    for (let i = 0; i < 10; i++) log.status({ ...STATUS, timeMs: 3000 + i * 20 });
+
     const dest = path.join(base, 'live.zip');
-    const outcome = await zipDirectoryToFile(log.dir, dest, []);
+    const outcome = await zipDirectoryToFile(log.dir, dest, [], new Date(), files);
     const entries = readZip(fs.readFileSync(dest));
     const live = entries.get('status.csv')?.toString('utf8') ?? '';
-    assert.equal(live.trim().split('\n').length, 1 + 50);
+    assert.equal(live.trim().split('\n').length, 1 + 50, '不能包含定住之后写入的行');
     assert.ok(live.endsWith('\n'), '前缀必须断在行尾');
     assert.ok(outcome.bytes > 0);
 
-    // 导出之后继续写，不应该影响已经导出的包
-    for (let i = 0; i < 10; i++) log.status({ ...STATUS, timeMs: 3000 + i * 20 });
-    const after = readZip(fs.readFileSync(dest));
-    assert.equal((after.get('status.csv')?.toString('utf8') ?? '').trim().split('\n').length, 1 + 50);
+    // 长度表与实际写出的一致（snapshot.json 的数字就是从这里来的）
+    const statusSize = files.find((f) => f.name === 'status.csv')?.size ?? -1;
+    assert.equal(entries.get('status.csv')?.length, statusSize);
   } finally {
     log.close('test');
     fs.rmSync(base, { recursive: true, force: true });

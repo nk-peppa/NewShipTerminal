@@ -26,7 +26,7 @@ import type { AlgoSidecar } from '../algo/sidecar.js';
 import type { AppConfig } from '../config.js';
 import type { ShipDiscovery } from '../link/discovery.js';
 import type { ReceivedScan, TcpLink } from '../link/tcpLink.js';
-import { zipDirectoryToFile } from '../log/logArchive.js';
+import { snapshotLogFiles, zipDirectoryToFile } from '../log/logArchive.js';
 import type { SessionLogger } from '../log/sessionLog.js';
 import type { SafetySupervisor } from '../safety/supervisor.js';
 
@@ -176,18 +176,27 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
 
     try {
       lg.flush();
+      // 同一拍里定住所有文件长度与统计：中间不让出事件循环，两者一定自洽
+      const files = snapshotLogFiles(lg.dir);
+      const stats = lg.stats();
       const snapshot = {
         exportedAt: new Date().toISOString(),
-        note: '导出时日志仍在记录，此后的数据不在本包内；原始流格式见 README.txt',
-        ...lg.stats(),
+        note: '导出时日志仍在记录，本包只含该时刻之前的数据；原始流格式见 README.txt',
+        bytesByFile: Object.fromEntries(files.map((f) => [f.name, f.size])),
+        ...stats,
       };
-      // 分块异步读盘：每个文件按导出开始时的长度截断，ZIP 仍是一致的前缀快照
-      const outcome = await zipDirectoryToFile(lg.dir, `${r.filePath}.part`, [
-        {
-          name: 'snapshot.json',
-          data: Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, 'utf8'),
-        },
-      ]);
+      const outcome = await zipDirectoryToFile(
+        lg.dir,
+        `${r.filePath}.part`,
+        [
+          {
+            name: 'snapshot.json',
+            data: Buffer.from(`${JSON.stringify(snapshot, null, 2)}\n`, 'utf8'),
+          },
+        ],
+        new Date(),
+        files,
+      );
       await fs.rename(`${r.filePath}.part`, r.filePath);
       console.log(`[log] 已导出 ${outcome.files.length} 个文件 → ${r.filePath} (${outcome.bytes} B)`);
       lg.event('info', 'log-export', {
