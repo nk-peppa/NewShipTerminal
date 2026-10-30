@@ -36,7 +36,9 @@ SLAM 引擎（`desktop/algo/cocommand2d`）与终端之间只有两个接缝：*
 ## 2. 录制回放
 
 会话目录中的 `rx.NNN.bin` 是原始 TCP 流（`u32 长度 | f64 epoch 毫秒 | 字节`），
-点云本体只存在这里（`scan.csv` 只是摘要）。
+点云本体只存在这里（`scan.csv` 只是摘要）。终端侧录制器是
+`src/main/log/sessionLog.ts`，随记录功能**单独合入**；本模块只依赖上面的文件格式，
+用其它录制器按同一格式写出的数据也能转换。
 
 ```powershell
 cd desktop

@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
 """把会话日志的雷达原始流（rx.NNN.bin）转成 SLAM 可回放的 Scan v1 JSONL。
 
-主进程 SessionLogger 写出的 ``rx.NNN.bin`` 每条记录是
-``u32 小端长度 | f64 小端 epoch 毫秒 | 原始 TCP 字节``。记录里的字节只是 TCP
-流的一段：一帧可能被切成几段，也可能跨记录。所以这里先按记录顺序拼回字节流，
-再按 ``AA 55`` 帧头重新分帧、校验 CRC，最后逐帧解码 SCAN / SCAN2。
+``rx.NNN.bin`` 是原始 TCP 字节流，每条记录为
+``u32 小端长度 | f64 小端 epoch 毫秒 | 原始字节``。本工具只依赖这个**格式**，
+不依赖写入方：任何按同样格式写出的文件都能转换（终端侧录制器见
+``src/main/log/sessionLog.ts``，随记录功能单独合入）。
+
+记录里的字节只是 TCP 流的一段：一帧可能被切成几段，也可能跨记录。所以这里先按
+记录顺序拼回字节流，再按 ``AA 55`` 帧头重新分帧、校验 CRC，最后逐帧解码 SCAN / SCAN2。
 
 输出的每行都是 Scan v1（x 前 / y 左 / 逆时针，弧度与米），可直接喂给离线建图：
 
@@ -177,6 +180,11 @@ def main(argv=None) -> int:
         return 2
 
     output = Path(args.output) if args.output else paths[0].parent / "scans.jsonl"
+    resolved_output = output.resolve()
+    if resolved_output in {path.resolve() for path in paths}:
+        # 惰性读取发生在打开输出之后，同路径会先把现场原始数据截断成空文件
+        print(f"拒绝把输出写到输入分片上（会丢失现场数据）: {resolved_output}", file=sys.stderr)
+        return 2
     stats = {
         "frames": 0,
         "crc_errors": 0,

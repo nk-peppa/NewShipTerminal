@@ -125,6 +125,30 @@ test('扫描日志转 JSONL：跨记录重分帧、坏 CRC 丢弃、SCAN2 兼容
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+test('拒绝把输出写到输入分片上', { skip: !pythonReady && 'python + numpy 不可用' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-scanlog-guard-'));
+  const rxPath = path.join(dir, 'rx.000.bin');
+  fs.writeFileSync(rxPath, record(1_760_000_000_000, buildFrame(T_SCAN, 1, scanPayload(1000))));
+  const sizeBefore = fs.statSync(rxPath).size;
+
+  const run = spawnSync(
+    python,
+    [
+      path.join(desktopRoot, 'tools', 'scan-log-to-jsonl.py'),
+      '--rx',
+      rxPath,
+      '--output',
+      rxPath,
+    ],
+    { encoding: 'utf8' },
+  );
+
+  assert.notEqual(run.status, 0, '输出与输入同路径时必须拒绝');
+  assert.equal(fs.readFileSync(rxPath).length, sizeBefore, '现场原始数据不能被截断');
+
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
 test('时钟归零不切时基，超长声明不阻塞后续帧', { skip: !pythonReady && 'python + numpy 不可用' }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'usv-scanlog-clock-'));
   const before = buildFrame(T_SCAN, 1, scanPayload(1000));
