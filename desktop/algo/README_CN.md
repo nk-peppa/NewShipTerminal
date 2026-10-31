@@ -15,16 +15,19 @@ python run_slam.py --input your_scans.jsonl --output output/measurement
 
 默认地图边长 40 米、栅格 0.08 米；可加 `--extent 60 --resolution 0.08`。边长/分辨率不超过 2000；地图越大，内存和计算开销越大。超出地图边界的区域不会被保存。
 
+地图以启动位置为中心，默认每个方向约 20 米；池子较大、从岸边启动时，可用 `--extent 80` 或 `LidarSlam(extent=80)` 增大存储范围。这不改变雷达量程，也不预设池子的尺寸或轮廓。
+
 包内保留了两份小型算法回归测试，包含射线漏格、噪点清除、启动失败、畸变隔离、时间/姿态补偿。需要复核时运行 `python -m pip install pytest`，然后 `python -m pytest -q`；正常建图只依赖 NumPy 和 SciPy。
 
 ## 接入现有程序
 
 ```python
 from cocommand2d.scan import Scan
-from cocommand2d.slam import LidarSlam
+from cocommand2d.slam import LidarSlam, SlamConfig
 from cocommand2d.recording import save_result
 
-slam = LidarSlam()
+slam = LidarSlam(config=SlamConfig(max_tracking_gap=5.0, recovery_confirmations=3,
+                                 water_ring_filter=True))
 # 每收到完整一圈扫描就调用；不要把不同圈的数据混在一起。
 scan = Scan.from_dict(one_scan_dictionary)
 pose = slam.update(scan)
@@ -35,7 +38,27 @@ current_grid = slam.grid.log_odds.copy()  # 可交给现有显示程序
 save_result(slam, "output/measurement")
 ```
 
-应顺序调用同一个 `slam` 实例。开始新的独立采集时创建新实例。`INITIALIZING` 阶段尚未发布地图；`LOST` / `DEGENERATE` 时保留上次可信位姿和地图，这个保持值不能当作当前定位结果。连续超过 1 秒没有可信匹配后停止接续，应检查输入并另起地图，不自动把新场景拼上去。`TRACKING` 也应检查 `quarantined_points`，它表示部分方向被隔离，未写入地图。
+应顺序调用同一个 `slam` 实例。开始新的独立采集时创建新实例。`INITIALIZING` 阶段尚未发布地图；`LOST` / `DEGENERATE` / `RECOVERING` 时保留上次可信位姿和地图，这个保持值不能当作当前定位结果。`TRACKING` 也应检查 `quarantined_points`，它表示部分方向被隔离，未写入地图。
+
+短时丢失特征或扫描中断后，默认允许在距最后可信扫描 **5 秒**内完成恢复。重新出现的扫描必须连续 **3 帧**匹配到保留的可信子地图，并通过更严格的重叠率、残差和相邻位姿一致性检查；确认帧间隔不能超过 `recovery_frame_gap=0.35` 秒。确认期间不更新公开位姿、地图和参考点云。坏帧或确认间隔过长会重新计数，但不会延长总恢复期限。恢复只写当前确认帧，不回填失踪段，不把候选扫描算成三次地图投票；中断前未确认的占据票数会清零，已确认地图保留。
+
+窗口可通过 `SlamConfig(max_tracking_gap=...)` 或命令行 `--recovery-window 5 --recovery-confirmations 3` 调整。局部恢复仍限制相对最后可信位姿的位移最多 0.8 米、转角最多 0.45 rad，并受配置速度上界约束；单纯延长时间窗口不意味着能接回任意远处或重复结构中的场景。超时后保持旧图，需重新创建实例另起地图。恢复期间暂停使用失踪前速度做去畸变，诊断为 `suspended_recovery`，快速运动仍可能无法匹配。无新输入时算法不会凭空产生定位；采集端仍需独立监测数据时间戳和通信状态。
+
+## 直边水池的碎片、短弧和环状回波处理
+
+默认开启 `pool_noise_filter=True`：先从当前扫描提取有足够长度的直线段，用池壁做定位参考；按实际扫描分段，不预设墙的朝向、数量或水池长宽。与长墙连接的同一直线和直角拐角会保留，孤立的短弧不会因为局部看起来平直就参与估计船位。可靠直线点不足时停止更新，不回退到用疑似噪声定位。
+
+其他点不直接删成“水面”，而是在可信位姿下变换到地图坐标，检查是否被至少 3 个不同的可信扫描观测到（邻近距离 0.10 m），且其中存在至少 0.25 m 的观察位置变化。只保留最近 12 帧、最多 2 秒证据。通过后以较低权重写地图，仍不进入定位参考；未通过的射线既不占据，也不清空地图。原地重复出现不能确认一个点是真的，低速移动也可能使小物体长期等待确认。这是保守取舍，真实短小结构的建图会延迟。
+
+`line_anchor_points`、`temporal_withheld` 分别记录直线定位点数和本帧暂不写图的点数；后者不等于已经识别出的噪点数。中断时清除待确认历史，已有地图保留。
+
+本包默认开启 `water_ring_filter=True`。它在初始化、定位和地图更新之前，筛选以雷达为中心的宽圆弧：距离近似相同、角度连续覆盖至少 90°、有足够独立方向的点，并且用直线拟合明显更差。确认一个宽圆弧后，同半径的分离碎片也一起隔离。删除的点既不参与匹配，也不用于擦除地图的自由空间射线；不改变原始 Scan 对象。
+
+这是针对直边水池的几何先验，不要求四面墙，也不输入池子的尺寸、角点或真实船位。可用于拼接矩形形成的凹多边形；测试中的 20×15 米及更大轮廓只是例子，不是现场测绘结果。判定使用半径不小于 0.5 米、约 ±0.06 米距离带、至少 45 点和足够角度覆盖，每圈最多检查 8 个距离候选。这些是可检验的启发式阈值，不是水面回波的硬件保证。
+
+局限：宽弧规则可能滤掉真实圆形结构及同半径的少量墙点；持续稳定、形似直墙的假回波也可能通过这些检查。进入非直边环境时使用 `SlamConfig(water_ring_filter=False, pool_noise_filter=False)`，命令行对应 `--no-water-ring-filter --no-pool-noise-filter`。两项可分别关闭；关闭宽环筛选不会自动关闭直线定位和时序检查。不能把保留下来的所有点都当作正确数据。
+
+`ring_rejected` 记录每圈隔离的点数，`ring_candidates` 记录通过宽弧判定的段数。滤除后如果缺少可靠池壁，算法保持/等待可信定位，不会用水面噪声补足点数。这个模块不能补出雷达没有测到的远处池壁，也不修复网络断流。
 
 ## 输入格式与单位
 
@@ -76,8 +99,8 @@ scan = Scan.from_c1(timestamp, angles_cw_deg, distances_mm, quality)
 - `map.npz`：`log_odds`、`observed`、左下原点 `origin`、分辨率 `resolution`。占据概率可用 `1/(1+exp(-log_odds))` 转换。
 - `map.json`：坐标说明及 `origin_timestamp`。原点属于成功启动的候选首帧，启动失败换候选时可能不再是输入第一帧。
 - `trajectory.csv`：`timestamp,x,y,yaw,status`，单位秒、米、弧度。
-- `diagnostics.csv`：每帧是否被接受、匹配残差/重叠比例、过滤点数、运动补偿状态、隔离点数、地图是否更新。
-- `summary.json`：批处理帧数、接受/拒绝数量、隔离帧数和耗时等摘要。
+- `diagnostics.csv`：每帧是否被接受、匹配残差/重叠比例、过滤点数（包括 `ring_rejected`）、运动补偿状态、隔离点数、地图是否更新，以及 `seconds_since_trusted`、`recovery_confirmations`、`recovered`。恢复候选的公开置信度为 0，不能据候选残差小就当作定位成功。
+- `summary.json`：批处理帧数、接受/拒绝数量、隔离帧数、恢复次数和耗时等摘要。
 
 PGM 图像首行对应地图上方，NPZ 数组第 0 行对应最小 y。显示程序不能把未排序的点连成折线；显示扫描点应使用散点，显示地图应使用栅格。
 
