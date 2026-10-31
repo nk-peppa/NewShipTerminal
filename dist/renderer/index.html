@@ -122,6 +122,28 @@
           </div>
           <div id="slam-io" class="mono muted"></div>
 
+          <h2>日志</h2>
+          <div id="log-info" class="mono muted" title="启动即自动记录；日志目录见「打开目录」">
+            —
+          </div>
+          <div class="slam-actions">
+            <button
+              id="log-open-btn"
+              class="btn sm"
+              title="在资源管理器里打开本次会话的日志目录（原始帧、CSV、事件都在这）"
+            >
+              <span class="btn-label">打开目录</span>
+            </button>
+            <button
+              id="log-save-btn"
+              class="btn sm"
+              title="把本次会话日志导出成 ZIP（含船端原始帧，便于发给别人排查）"
+            >
+              <span class="btn-label">导出日志</span>
+            </button>
+          </div>
+          <div id="log-io" class="mono muted"></div>
+
           <h2>链路恢复</h2>
           <button id="reconnect-btn" class="btn">立即重连</button>
           <div id="link-hint" class="mono muted">已连接</div>

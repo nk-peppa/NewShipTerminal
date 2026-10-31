@@ -716,7 +716,8 @@ dd {
   text-align: center;
 }
 
-#slam-io {
+#slam-io,
+#log-io {
   margin-bottom: calc(var(--u) * 1.09);
   line-height: 1.5;
   word-break: break-all;

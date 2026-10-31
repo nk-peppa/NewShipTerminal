@@ -255,7 +255,7 @@
       }
       const pool = bestCol ? list.filter((el2) => columnOf(el2) === bestCol) : list;
       pool.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-      this.setFocus(pool[0] ?? list[0]);
+      this.setFocus(pool[0] ?? list[0] ?? null);
     }
     clearFocus() {
       this.current?.classList.remove("nav-focus");
@@ -663,13 +663,20 @@
         ctx2.save();
         ctx2.translate(bx, by);
         ctx2.rotate(hd);
-        ctx2.fillStyle = this.poseColor();
         ctx2.beginPath();
         ctx2.moveTo(L, 0);
         ctx2.lineTo(-W * 0.7, W * 0.62);
         ctx2.lineTo(-W * 0.7, -W * 0.62);
         ctx2.closePath();
-        ctx2.fill();
+        ctx2.fillStyle = this.poseColor();
+        if (this.pose.poseValid === false) {
+          ctx2.strokeStyle = this.poseColor();
+          ctx2.lineWidth = 1.5 * dpr;
+          ctx2.setLineDash([3 * dpr, 3 * dpr]);
+          ctx2.stroke();
+        } else {
+          ctx2.fill();
+        }
         ctx2.restore();
       }
       const barM = 2;
@@ -708,7 +715,7 @@
     poseColor() {
       const s = (this.pose?.status ?? "").toUpperCase();
       if (s.startsWith("TRACKING")) return "rgba(74, 222, 128, 0.95)";
-      if (s.startsWith("INITIALIZED")) return "rgba(250, 204, 21, 0.95)";
+      if (s.startsWith("INITIALIZED") || s.startsWith("INITIALIZING")) return "rgba(250, 204, 21, 0.95)";
       return "rgba(248, 113, 113, 0.95)";
     }
   };
@@ -759,6 +766,10 @@
     saveSlamBtn: $("save-slam-btn"),
     saveSlamKey: $("save-slam-key"),
     slamIo: $("slam-io"),
+    logInfo: $("log-info"),
+    logOpenBtn: $("log-open-btn"),
+    logSaveBtn: $("log-save-btn"),
+    logIo: $("log-io"),
     telemetry: $("telemetry"),
     telemetryScroll: $("telemetry-scroll"),
     menuBtn: $("menu-btn"),
@@ -871,7 +882,7 @@
     }
     const x = pad.axes[0] ?? 0;
     const y = pad.axes[1] ?? 0;
-    if (padMenu.isActive || saveBusy) {
+    if (padMenu.isActive || modalBusy) {
       padThrottle = 0;
       padRudder = 0;
     } else {
@@ -956,7 +967,7 @@
   }
   function sendLoop() {
     const now = Date.now();
-    if (now - state.lastSend >= 33) {
+    if (now - state.lastSend >= 20) {
       state.lastSend = now;
       window.usv.sendCmd(padThrottle, padRudder);
     }
@@ -965,8 +976,6 @@
     const now = performance.now();
     const dtMs = state.lastFrameAt ? now - state.lastFrameAt : 16;
     state.lastFrameAt = now;
-    pollPad();
-    sendLoop();
     pollMapPad(dtMs);
     const r = fitCanvas(el.canvas, el.radarWrap);
     radar.render(ctx, r.px, r.dpr);
@@ -1285,10 +1294,10 @@
     window.usv.clearMap();
   }
   el.clearMapBtn.addEventListener("click", clearMap);
-  var saveBusy = false;
+  var modalBusy = false;
   async function saveSlam() {
-    if (saveBusy) return;
-    saveBusy = true;
+    if (modalBusy) return;
+    modalBusy = true;
     el.saveSlamBtn.disabled = true;
     el.slamIo.textContent = "\u6B63\u5728\u51C6\u5907\u5BFC\u51FA\u2026";
     try {
@@ -1303,16 +1312,97 @@
       }
       el.slamIo.className = `mono ${r.ok ? "t-ok" : r.canceled ? "muted" : "t-bad"}`;
     } finally {
-      saveBusy = false;
+      modalBusy = false;
       el.saveSlamBtn.disabled = false;
     }
   }
   el.saveSlamBtn.addEventListener("click", () => void saveSlam());
   el.saveSlamKey.innerHTML = xboxIcon("view", { size: 24, title: "View \u952E\uFF1A\u4FDD\u5B58 SLAM \u6570\u636E" });
+  function fmtBytes(n) {
+    if (n < 1024) return `${n} B`;
+    if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+    return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  }
+  function fmtDuration(ms) {
+    const s = Math.max(0, Math.floor(ms / 1e3));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor(s % 3600 / 60);
+    const sec = s % 60;
+    const mm = String(m).padStart(2, "0");
+    const ss = String(sec).padStart(2, "0");
+    return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+  }
+  async function refreshLog() {
+    try {
+      const s = await window.usv.getLogStatus();
+      const usable = s.enabled && !s.error;
+      el.logOpenBtn.disabled = !s.dir;
+      el.logSaveBtn.disabled = !usable;
+      el.logInfo.title = s.dir ?? "";
+      if (s.error) {
+        el.logInfo.textContent = `\u8BB0\u5F55\u5931\u8D25\uFF1A${s.error}`;
+        el.logInfo.className = "mono t-bad";
+        return;
+      }
+      if (!s.enabled || !s.dir) {
+        el.logInfo.textContent = s.dir ? "\u5DF2\u505C\u6B62\u8BB0\u5F55" : "\u65E5\u5FD7\u5DF2\u5173\u95ED\uFF08--no-log\uFF09";
+        el.logInfo.className = "mono muted";
+        return;
+      }
+      const lossy = s.statusGaps > 0;
+      el.logInfo.className = `mono ${lossy ? "t-warn" : "muted"}`;
+      el.logInfo.textContent = `\u8BB0\u5F55\u4E2D ${fmtDuration(s.durationMs)} \xB7 ${fmtBytes(s.bytes)} \xB7 STATUS ${s.statusRows} \xB7 \u70B9\u4E91 ${s.scanRows} \u5708 \xB7 \u4F4D\u59FF ${s.poseRows} \xB7 \u4E8B\u4EF6 ${s.events}` + (lossy ? ` \xB7 \u4E22\u5E27 ${s.statusGaps} \u6B21\uFF08\u6700\u957F ${s.maxStatusGapMs} ms\uFF09` : "");
+    } catch {
+      el.logInfo.textContent = "\u65E5\u5FD7\u72B6\u6001\u8BFB\u53D6\u5931\u8D25";
+      el.logInfo.className = "mono t-bad";
+    }
+  }
+  async function openLogDir() {
+    try {
+      const r = await window.usv.openLogDir();
+      el.logIo.textContent = r.ok ? `\u5DF2\u6253\u5F00\uFF1A${r.message}` : r.message;
+      el.logIo.className = `mono ${r.ok ? "muted" : "t-bad"}`;
+    } catch (err) {
+      el.logIo.textContent = `\u6253\u5F00\u5931\u8D25\uFF1A${err.message}`;
+      el.logIo.className = "mono t-bad";
+    }
+  }
+  el.logOpenBtn.addEventListener("click", () => void openLogDir());
+  async function saveLog() {
+    if (modalBusy) return;
+    modalBusy = true;
+    el.logSaveBtn.disabled = true;
+    el.logIo.textContent = "\u6B63\u5728\u6253\u5305\u65E5\u5FD7\u2026";
+    try {
+      const r = await window.usv.saveLog();
+      if (r.canceled) {
+        el.logIo.textContent = "\u5DF2\u53D6\u6D88\u5BFC\u51FA";
+      } else if (r.ok) {
+        el.logIo.textContent = `\u5DF2\u5BFC\u51FA ${r.message}\uFF08${fmtBytes(r.bytes ?? 0)}\uFF09`;
+      } else {
+        el.logIo.textContent = r.message;
+      }
+      el.logIo.className = `mono ${r.ok ? "t-ok" : r.canceled ? "muted" : "t-bad"}`;
+    } catch (err) {
+      el.logIo.textContent = `\u5BFC\u51FA\u5931\u8D25\uFF1A${err.message}`;
+      el.logIo.className = "mono t-bad";
+    } finally {
+      modalBusy = false;
+      el.logSaveBtn.disabled = false;
+      void refreshLog();
+    }
+  }
+  el.logSaveBtn.addEventListener("click", () => void saveLog());
+  void refreshLog();
+  window.setInterval(() => void refreshLog(), 2e3);
   setupOverlayScrollbar();
   window.usv.getConfig().then((cfg) => {
     el.ships.dataset.algo = String(cfg.algo.enabled);
   });
+  window.setInterval(() => {
+    pollPad();
+    sendLoop();
+  }, 16);
   requestAnimationFrame(drawLoop);
 })();
 //# sourceMappingURL=bundle.js.map

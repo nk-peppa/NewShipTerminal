@@ -39,7 +39,7 @@ class AlgoSidecar extends node_events_1.EventEmitter {
         this.child?.kill();
         this.child = null;
     }
-    /** 清空 SLAM 状态：侧车重建实例，回到 INITIALIZED 之前的空白状态 */
+    /** 清空 SLAM 状态：侧车重建实例，回到 WAITING 的空白状态 */
     reset() {
         const child = this.child;
         if (!child || !child.stdin || child.stdin.destroyed)

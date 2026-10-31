@@ -32,6 +32,7 @@ class TcpLink extends node_events_1.EventEmitter {
     rxBytes = 0;
     rxBytesPerSec = 0;
     hello = null;
+    wireTap = null;
     /* ---- 时钟同步（NTP 四时间戳法） ---- */
     pingTimer = null;
     /** 发出但未回的 PING：t1 → 本地发出时刻 */
@@ -42,6 +43,26 @@ class TcpLink extends node_events_1.EventEmitter {
     constructor(opts) {
         super();
         this.opts = opts;
+    }
+    /** 旁路抓包：所有收/发字节原样交给回调，供会话日志落盘 */
+    setWireTap(tap) {
+        this.wireTap = tap;
+    }
+    tap(dir, data) {
+        if (!this.wireTap)
+            return;
+        try {
+            this.wireTap(dir, data, Date.now());
+        }
+        catch (err) {
+            // 日志失败不能影响控制链路
+            console.warn(`[link] wire tap 失败: ${err.message}`);
+        }
+    }
+    /** 发送统一入口：写 socket + 抓包 */
+    writeFrame(socket, frame) {
+        socket.write(frame);
+        this.tap('tx', frame);
     }
     /** 切换目标船端（自动发现选船时使用） */
     setTarget(host, port) {
@@ -121,7 +142,7 @@ class TcpLink extends node_events_1.EventEmitter {
         const t1 = Date.now();
         this.pendingPing = { t1 };
         try {
-            s.write((0, protocol_js_1.buildFrame)(protocol_js_1.T_PING, this.nextSeq(), (0, protocol_js_1.packPing)(t1)));
+            this.writeFrame(s, (0, protocol_js_1.buildFrame)(protocol_js_1.T_PING, this.nextSeq(), (0, protocol_js_1.packPing)(t1)));
         }
         catch {
             this.pendingPing = null;
@@ -133,7 +154,7 @@ class TcpLink extends node_events_1.EventEmitter {
         if (!this.connected || !s || s.destroyed)
             return false;
         try {
-            s.write((0, protocol_js_1.buildFrame)(protocol_js_1.T_TIME_SYNC, this.nextSeq(), Buffer.alloc(0)));
+            this.writeFrame(s, (0, protocol_js_1.buildFrame)(protocol_js_1.T_TIME_SYNC, this.nextSeq(), Buffer.alloc(0)));
             return true;
         }
         catch {
@@ -197,7 +218,7 @@ class TcpLink extends node_events_1.EventEmitter {
             this.hello = null;
             // 先握手：声明 v2 + SCAN2/OTA 能力；旧固件会忽略未知帧，行为回落到 v1
             try {
-                socket.write((0, protocol_js_1.buildFrame)(protocol_js_1.T_HELLO, 0, (0, protocol_js_1.packHello)()));
+                this.writeFrame(socket, (0, protocol_js_1.buildFrame)(protocol_js_1.T_HELLO, 0, (0, protocol_js_1.packHello)()));
             }
             catch (e) {
                 this.lastError = e instanceof Error ? e.message : String(e);
@@ -219,6 +240,8 @@ class TcpLink extends node_events_1.EventEmitter {
     }
     onData(chunk) {
         this.rxBytes += chunk.length;
+        // 抓包必须在解析前：解析失败/丢帧的原始字节同样值得留档
+        this.tap('rx', chunk);
         let frames;
         try {
             frames = this.parser.feed(chunk);
@@ -324,8 +347,9 @@ class TcpLink extends node_events_1.EventEmitter {
         const cmd = this.opts.getCommand();
         const frame = (0, protocol_js_1.buildFrame)(protocol_js_1.T_CMD, this.seq++, (0, protocol_js_1.packCmd)(cmd.throttleX10, cmd.servosX10, cmd.flags));
         try {
-            socket.write(frame);
+            this.writeFrame(socket, frame);
             this.txCount++;
+            this.emit('cmd', cmd);
         }
         catch (err) {
             this.lastError = err instanceof Error ? err.message : String(err);

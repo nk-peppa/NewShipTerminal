@@ -14,6 +14,7 @@ function loadConfig(argv = process.argv.slice(1)) {
     const port = Number(argOf(argv, '--port') ?? 0);
     const algoScript = argOf(argv, '--algo-script') ?? node_path_1.default.join(__dirname, '..', '..', 'tools', 'algo-sidecar.py');
     const otaPort = Number(argOf(argv, '--ota-port') ?? 0);
+    const logKeep = Number(argOf(argv, '--log-keep') ?? 0);
     return {
         ship: { host, port: port > 0 ? port : 9527 },
         ota: { port: otaPort > 0 ? otaPort : 9530 },
@@ -31,6 +32,13 @@ function loadConfig(argv = process.argv.slice(1)) {
             script: algoScript,
         },
         ui: { window: !argv.includes('--no-window') },
+        log: {
+            enabled: !argv.includes('--no-log'),
+            dir: argOf(argv, '--log-dir'),
+            // 实船一次实验 ≤10 分钟、单次约 15MB，留 20 次 ≈ 300MB
+            keep: logKeep > 0 ? Math.floor(logKeep) : 20,
+            rawPartMiB: 128,
+        },
     };
 }
 //# sourceMappingURL=config.js.map
