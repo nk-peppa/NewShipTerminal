@@ -5,13 +5,15 @@ import { app, BrowserWindow, Menu } from 'electron';
 import type { ShipView } from '../shared/api.js';
 import { AlgoSidecar } from './algo/sidecar.js';
 import { loadConfig } from './config.js';
-import { attachIpc } from './ipc/bridge.js';
+import { attachIpc, type Runtime } from './ipc/bridge.js';
 import { ShipDiscovery } from './link/discovery.js';
 import { TcpLink, type ReceivedScan } from './link/tcpLink.js';
 import { SessionLogger } from './log/sessionLog.js';
+import { MapLibrary } from './maps/mapLibrary.js';
 import { SafetySupervisor } from './safety/supervisor.js';
 
 const cfg = loadConfig();
+const maps = new MapLibrary(cfg.storage.mapsDir);
 
 const safety = new SafetySupervisor(cfg.control);
 
@@ -43,6 +45,7 @@ let win: BrowserWindow | null = null;
 let quitting = false;
 let logger: SessionLogger | null = null;
 let logError: string | null = null;
+let runtime: Runtime | null = null;
 
 function readBuildInfo(): unknown {
   try {
@@ -151,20 +154,23 @@ function createWindow(): BrowserWindow {
         }, delayMs);
       }
 
-      // 自检钩子：USV_CLICK=<selector>[,delayMs] 定时点击某元素（仅调试用）
+      // 自检钩子：USV_CLICK=<selector>[,delayMs][;selector,delayMs…] 定时点击（仅调试用）
       const clickSpec = process.env.USV_CLICK;
       if (clickSpec) {
-        const [selector, delay = '3000'] = clickSpec.split(',');
-        setTimeout(() => {
-          void created.webContents
-            .executeJavaScript(
-              `(() => { const e = document.querySelector(${JSON.stringify(selector)});
-                        if (!e) return 'not-found';
-                        e.click(); return 'clicked'; })()`,
-            )
-            .then((r) => console.log(`[ui] 点击 ${selector} → ${r}`))
-            .catch((e) => console.error('[ui] 点击失败', e.message));
-        }, Number(delay));
+        for (const spec of clickSpec.split(';')) {
+          const [selector, delay = '3000'] = spec.split(',');
+          if (!selector) continue;
+          setTimeout(() => {
+            void created.webContents
+              .executeJavaScript(
+                `(() => { const e = document.querySelector(${JSON.stringify(selector)});
+                          if (!e) return 'not-found';
+                          e.click(); return 'clicked'; })()`,
+              )
+              .then((r) => console.log(`[ui] 点击 ${selector} → ${r}`))
+              .catch((e) => console.error('[ui] 点击失败', e.message));
+          }, Number(delay));
+        }
       }
 
       void created.webContents
@@ -227,7 +233,18 @@ app.whenReady().then(() => {
 
   if (cfg.ui.window) {
     win = createWindow();
-    attachIpc(win, { cfg, link, safety, discovery, algo, log: logger, logError });
+    runtime = {
+      cfg,
+      link,
+      safety,
+      discovery,
+      algo,
+      log: logger,
+      logError,
+      maps,
+      experimentsDir: cfg.storage.experimentsDir,
+    };
+    attachIpc(win, runtime);
   }
 
   if (discovery) {
@@ -276,6 +293,8 @@ app.on('before-quit', (event) => {
   safety.setEstop(false);
   safety.setArm(false);
   safety.forceZero();
+  // 先收尾实验（异步写 summary），600ms 足够几十 KB
+  runtime?.finalizeExperiment?.();
 
   setTimeout(() => {
     link.stop();

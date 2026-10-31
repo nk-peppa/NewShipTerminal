@@ -19,6 +19,7 @@
     "sim:check": "npm run build && node tools/sim-check.cjs",
     "slam:check": "npm run build && node tools/slam-check.cjs",
     "slam:export": "npm run build && node tools/slam-export-check.cjs",
+    "map:localize": "npm run build && node tools/map-localization-check.cjs",
     "smoke": "npm run build && node tools/link-smoke.cjs",
     "log:50hz": "npm run build && node tools/log-50hz-check.cjs",
     "release": "npm run build && node tools/package-release.mjs",

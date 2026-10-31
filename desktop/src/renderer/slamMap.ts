@@ -46,6 +46,10 @@ export class SlamMapView {
 
   /** 最近一次渲染用的标尺，供像素→世界换算 */
   private lastScale = 20;
+  /** 定位初始位姿点选：位置与朝向（世界系） */
+  private pick: { x: number; y: number; yaw: number | null } | null = null;
+  /** 当前显示的是先验地图（定位模式） */
+  prior = false;
 
   observed = 0;
   lastMapAt = 0;
@@ -181,6 +185,34 @@ export class SlamMapView {
     this.zoom = 1;
     this.center.x = 0;
     this.center.y = 0;
+    this.pick = null;
+    this.prior = false;
+  }
+
+  /** 屏幕像素 → 世界坐标（点选初始位姿用） */
+  screenToWorld(px: number, py: number, w: number, h: number): { x: number; y: number } {
+    const scale = this.lastScale || 1;
+    const sx = (px - w / 2) / scale;
+    const sy = -(py - h / 2) / scale;
+    const c = Math.cos(this.rot);
+    const s = Math.sin(this.rot);
+    return { x: this.center.x + sx * c + sy * s, y: this.center.y - sx * s + sy * c };
+  }
+
+  setPickPosition(x: number, y: number): void {
+    this.pick = { x, y, yaw: null };
+  }
+
+  setPickYaw(yaw: number): void {
+    if (this.pick) this.pick.yaw = yaw;
+  }
+
+  clearPick(): void {
+    this.pick = null;
+  }
+
+  get pickState(): { x: number; y: number; yaw: number | null } | null {
+    return this.pick;
   }
 
   get hasMap(): boolean {
@@ -298,6 +330,43 @@ export class SlamMapView {
       ctx.restore();
     }
 
+    // 初始位姿点选标记（定位页）
+    if (this.pick) {
+      const [bx, by] = w2c(this.pick.x, this.pick.y);
+      ctx.save();
+      ctx.strokeStyle = 'rgba(255, 176, 32, 0.95)';
+      ctx.fillStyle = 'rgba(255, 176, 32, 0.95)';
+      ctx.lineWidth = 1.6 * dpr;
+      ctx.beginPath();
+      ctx.arc(bx, by, 7 * dpr, 0, 2 * Math.PI);
+      ctx.moveTo(bx - 11 * dpr, by);
+      ctx.lineTo(bx + 11 * dpr, by);
+      ctx.moveTo(bx, by - 11 * dpr);
+      ctx.lineTo(bx, by + 11 * dpr);
+      ctx.stroke();
+      if (this.pick.yaw != null) {
+        const hd = -(this.pick.yaw + this.rot);
+        const len = 34 * dpr;
+        const ex = bx + Math.cos(hd) * len;
+        const ey = by + Math.sin(hd) * len;
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(ex, ey);
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.moveTo(ex, ey);
+        ctx.lineTo(ex - Math.cos(hd - 0.4) * 8 * dpr, ey - Math.sin(hd - 0.4) * 8 * dpr);
+        ctx.lineTo(ex - Math.cos(hd + 0.4) * 8 * dpr, ey - Math.sin(hd + 0.4) * 8 * dpr);
+        ctx.closePath();
+        ctx.fill();
+      }
+      ctx.font = `${11 * dpr}px Consolas, monospace`;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText('初始位姿', bx + 13 * dpr, by - 8 * dpr);
+      ctx.restore();
+    }
+
     // 比例尺
     const barM = 2;
     const barPx = barM * scale;
@@ -318,7 +387,7 @@ export class SlamMapView {
     ctx.textBaseline = 'alphabetic';
     ctx.font = `${fs}px Consolas, monospace`;
     ctx.fillStyle = 'rgba(127, 144, 165, 0.95)';
-    ctx.fillText('SLAM 实时地图', 12 * dpr, 12 * dpr + fs);
+    ctx.fillText(this.prior ? '先验地图 · 定位' : 'SLAM 实时地图', 12 * dpr, 12 * dpr + fs);
 
     let modeText: string;
     let modeColor: string;

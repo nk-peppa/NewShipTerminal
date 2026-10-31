@@ -5,5 +5,12 @@
     "outDir": "dist-test",
     "types": ["node"]
   },
-  "include": ["src/shared/**/*.ts", "src/main/log/**/*.ts", "test/**/*.ts"]
+  "include": [
+    "src/shared/**/*.ts",
+    "src/main/log/**/*.ts",
+    "src/main/algo/**/*.ts",
+    "src/main/maps/**/*.ts",
+    "src/main/experiments/**/*.ts",
+    "test/**/*.ts"
+  ]
 }

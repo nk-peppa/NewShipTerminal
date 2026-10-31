@@ -1,17 +1,19 @@
 # SLAM 接入与回放
 
 SLAM 引擎（`desktop/algo/cocommand2d`）与终端之间只有两个接缝：**进程内 sidecar**
-和 **离线回放文件**。引擎可以整包替换，这两处的约定不变。
+和 **离线回放文件**。引擎可以整包替换，这两处的约定不变。定位器在
+`desktop/algo/localization`，只读引用 vendor 的 `Scan` / `prepare_scan`。
 
 ```
-船端 SCAN/SCAN2 ──► TcpLink ──► AlgoSidecar(stdin JSONL) ──► SLAM ──► pose / map
-                                  ▲
+船端 SCAN/SCAN2 ──► TcpLink ──► AlgoSidecar(stdin JSONL) ──► SLAM / 定位 ──► pose / map
+                                  ▲                              ▲
+                                  │                     map.yaml + PGM（先验地图）
 录制 rx.NNN.bin ──► scan-log-to-jsonl.py ──► scans.jsonl ──► run_slam.py（离线）
 ```
 
 ## 1. 位姿事件（stdin/stdout 逐行 JSON）
 
-`api: 2`。每收到一圈就回一条 `pose`：
+`api: 3`。建图模式每收到一圈就回一条 `pose`：
 
 | 字段 | 含义 |
 |---|---|
@@ -32,6 +34,26 @@ SLAM 引擎（`desktop/algo/cocommand2d`）与终端之间只有两个接缝：*
 
 `poseValid=false` 时渲染端只画虚线轮廓，表示"最后已知位置"；显示方不得据此
 判断船在移动或静止。
+
+### 1.1 先验地图定位（api 3）
+
+加载地图库里的 `map.yaml`（同目录有 `map.pgm`、可选 `map.png`）：
+
+| 方向 | 消息 | 说明 |
+|---|---|---|
+| → | `{"type":"load_map","path":"<abs map.yaml>"}` | 进入定位模式；清空位姿，首帧自动全局搜索 |
+| ← | `{"type":"map_loaded","ok":true,"name":...,"size":500,"resolution":0.08,"origin":[x,y],"occupied":...,"config":{...}}` | 确认加载；`config` 是定位器参数，实验 `config.json` 直接记录 |
+| ← | `{"type":"map","prior":true,"png":"<base64>","size":500,"resolution":0.08,"origin":[x,y]}` | 先验地图预览 |
+| ← | `{"type":"localization","phase":"waiting\|searching\|tracking\|lost\|ambiguous","message":...,"candidates":[...],"metrics":{...}}` | 相位与指标（≤2Hz 或变化时） |
+| → | `{"type":"set_initial_pose","x":..,"y":..,"yaw":..}` | 手动初始位姿；跳过全局搜索 |
+| → | `{"type":"clear_pose"}` | 清空位姿，下一帧重新全局定位 |
+| → | `{"type":"unload_map"}` | 回到建图模式 |
+| ← | `{"type":"pose","mode":"localization","phase":"tracking","poseValid":true,...}` | 定位位姿；额外带 `rmse/inlier/coverage/confidence/matched/dtMs/candidates/margin/condition` |
+
+- 坐标与建图一致：`x` 前 / `y` 左 / 逆时针，原点为建图首帧位姿；**地图不参与建图更新**。
+- 自动全局定位：0.6 m / 10° 粗搜索 → 候选细化 → 多帧投票；仍不确定时输出
+  `ambiguous`，不静默采用错误位姿。
+- 侧车崩溃重启后主进程会重发 `load_map` 与初始位姿，实验继续记录。
 
 ## 2. 录制回放
 

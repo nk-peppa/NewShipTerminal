@@ -47,7 +47,10 @@
 ## 边界规则
 
 1. `cocommand2d/` 是 vendor 目录：**只整包替换，不在里面手改**。要改先和算法负责人确认；改动要么回流给他，要么放在目录外。
-2. 目录外的部分（`tests/conftest.py`、`desktop/tools/algo-sidecar.py`）是**接缝**，归终端侧维护。
+2. 目录外的部分（`tests/conftest.py`、`desktop/tools/algo-sidecar.py`、
+   `desktop/algo/localization/`）是**接缝**，归终端侧维护。定位器只读 import
+   `cocommand2d.scan.Scan` 与 `cocommand2d.slam.preprocessing.prepare_scan`，
+   不改 vendor 行为。
 3. 算法只允许通过两个入口暴露给终端：
    - 进程内：`desktop/tools/algo-sidecar.py`（stdin/stdout 逐行 JSON，`api: 2`）
    - 离线：`python run_slam.py --input <Scan v1 JSONL> --output <新目录>`

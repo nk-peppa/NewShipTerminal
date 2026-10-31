@@ -1,17 +1,24 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron';
 import fs from 'node:fs/promises';
+import path from 'node:path';
 
 import { runOta } from '../firmware/ota.js';
 
 import type {
   AlgoHealthView,
   ConfigView,
+  ExperimentStatusView,
   LinkStateView,
+  LocalizationStateView,
   LogSaveView,
   LogStatusView,
+  MapEntryView,
+  MapLoadView,
+  MapSaveView,
   MapView,
   PoseView,
   ScanView,
+  SlamModeView,
   StatusView,
 } from '../../shared/api.js';
 import {
@@ -24,10 +31,12 @@ import {
 import { buildSlamArchive, SlamRecorder, stampName, type SaveOutcome } from '../algo/slamExport.js';
 import type { AlgoSidecar } from '../algo/sidecar.js';
 import type { AppConfig } from '../config.js';
+import { ExperimentRecorder } from '../experiments/experimentRecorder.js';
 import type { ShipDiscovery } from '../link/discovery.js';
 import type { ReceivedScan, TcpLink } from '../link/tcpLink.js';
 import { snapshotLogFiles, zipDirectoryToFile } from '../log/logArchive.js';
 import type { SessionLogger } from '../log/sessionLog.js';
+import { MapLibrary } from '../maps/mapLibrary.js';
 import type { SafetySupervisor } from '../safety/supervisor.js';
 
 export interface Runtime {
@@ -39,6 +48,12 @@ export interface Runtime {
   log: SessionLogger | null;
   /** 日志初始化失败原因；正常关闭（--no-log）为 null */
   logError: string | null;
+  /** 地图库（与日志同父目录） */
+  maps: MapLibrary;
+  /** 实验根目录 */
+  experimentsDir: string;
+  /** 退出时由 index.ts 调用，确保实验 summary 落盘 */
+  finalizeExperiment?: () => void;
 }
 
 export function configView(cfg: AppConfig): ConfigView {
@@ -52,6 +67,227 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
 
   // SLAM 结果录制：地图留最新一张 + 轨迹全量，供「保存 SLAM 数据」导出
   const slamLog = new SlamRecorder();
+  const maps = rt.maps;
+
+  /* ---------------- 建图 / 定位模式 ---------------- */
+
+  let mode: 'mapping' | 'localization' = 'mapping';
+  let loaded: { name: string; dir: string; yamlPath: string; hash: string | null; meta: unknown } | null =
+    null;
+  let locState: LocalizationStateView | null = null;
+  let experiment: ExperimentRecorder | null = null;
+  let mapLoadWaiter: ((value: Record<string, unknown>) => void) | null = null;
+
+  const experimentOff = (): ExperimentStatusView => ({
+    active: false,
+    dir: null,
+    startedAt: null,
+    durationMs: 0,
+    frames: 0,
+    tracking: 0,
+    lost: 0,
+    ambiguous: 0,
+    scans: 0,
+    scansDropped: 0,
+    bytes: 0,
+    map: null,
+    error: null,
+  });
+
+  const sendExperiment = (): void => {
+    send('evt:experiment', experiment?.stats() ?? experimentOff());
+  };
+
+  const stopExperiment = async (reason: string): Promise<void> => {
+    const rec = experiment;
+    if (!rec) return;
+    experiment = null;
+    const dir = await rec.finalize(reason).catch(() => null);
+    rt.log?.event('info', 'experiment-finalized', { dir, reason });
+    sendExperiment();
+  };
+
+  const leaveLocalization = async (reason: string): Promise<void> => {
+    await stopExperiment(reason);
+    rt.algo?.unloadMap();
+    mode = 'mapping';
+    loaded = null;
+    locState = null;
+    send('evt:loc', null);
+    send('evt:mode', slamModeView());
+    // 让界面丢掉先验地图
+    send('evt:map', { t: Date.now(), png: '', size: 0, resolution: 0, origin: [0, 0], observed: 0, cleared: true });
+  };
+
+  const slamModeView = (): SlamModeView => ({ mode, mapName: loaded?.name ?? null });
+
+  ipcMain.handle('slam:mode', (): SlamModeView => slamModeView());
+
+  ipcMain.handle('maps:list', async (): Promise<MapEntryView[]> => maps.list());
+
+  ipcMain.handle('maps:save', async (_e, name?: string): Promise<MapSaveView> => {
+    if (!slamLog.hasMap) return { ok: false, message: '还没有 SLAM 地图，先让船跑一圈' };
+    const st = rt.link.state();
+    const result = await maps.save({
+      recorder: slamLog,
+      appVersion: app.getVersion(),
+      ship: { host: st.host, port: st.port, firmware: st.fwVersion, caps: st.caps },
+      name,
+    });
+    rt.log?.event(result.ok ? 'info' : 'warn', 'map-save', {
+      name: result.name,
+      dir: result.dir,
+      ok: result.ok,
+      message: result.message,
+    });
+    return {
+      ok: result.ok,
+      name: result.name,
+      canceled: false,
+      message: result.message,
+      bytes: result.bytes,
+    };
+  });
+
+  ipcMain.handle('maps:delete', async (_e, name: string): Promise<MapLoadView> => {
+    if (mode === 'localization' && loaded?.name === name) {
+      return { ok: false, message: '正在用这张地图定位，先停止定位' };
+    }
+    const r = await maps.delete(String(name ?? ''));
+    rt.log?.event(r.ok ? 'info' : 'warn', 'map-delete', { name, ok: r.ok, message: r.message });
+    return { ok: r.ok, name, message: r.message };
+  });
+
+  ipcMain.handle('maps:open', async (): Promise<{ ok: boolean; message: string }> => {
+    const dir = await maps.openDir();
+    const err = await shell.openPath(dir);
+    return err ? { ok: false, message: err } : { ok: true, message: dir };
+  });
+
+  ipcMain.handle('localization:start', async (_e, name: string): Promise<MapLoadView> => {
+    const algo = rt.algo;
+    if (!algo) return { ok: false, message: '算法未启用（--no-algo）' };
+    if (!rt.cfg.algo.enabled) return { ok: false, message: '算法未启用' };
+
+    const loadedMap = await maps.load(String(name ?? ''));
+    if (!loadedMap.ok || !loadedMap.yamlPath || !loadedMap.meta) {
+      return { ok: false, message: loadedMap.message };
+    }
+
+    await stopExperiment('switch-map');
+    mode = 'localization';
+    loaded = {
+      name: loadedMap.name!,
+      dir: path.dirname(loadedMap.yamlPath),
+      yamlPath: loadedMap.yamlPath,
+      hash: loadedMap.meta.hash || null,
+      meta: loadedMap.meta,
+    };
+    locState = null;
+
+    const response = await new Promise<Record<string, unknown> | null>((resolve) => {
+      mapLoadWaiter = resolve;
+      algo.loadMap(loadedMap.yamlPath!);
+      setTimeout(() => {
+        if (mapLoadWaiter === resolve) {
+          mapLoadWaiter = null;
+          resolve(null);
+        }
+      }, 20000);
+    });
+    if (!response || response.ok !== true) {
+      mode = 'mapping';
+      loaded = null;
+      send('evt:mode', slamModeView());
+      const message =
+        response && typeof response.message === 'string'
+          ? response.message
+          : '侧车没有在 20 秒内确认地图加载';
+      rt.log?.event('error', 'localization-start-failed', { name, message });
+      return { ok: false, message };
+    }
+
+    const st = rt.link.state();
+    try {
+      experiment = await ExperimentRecorder.create({
+        baseDir: rt.experimentsDir,
+        appVersion: app.getVersion(),
+        ship: { host: st.host, port: st.port, firmware: st.fwVersion, caps: st.caps },
+        map: { name: loaded.name, hash: loaded.hash, dir: loaded.dir },
+        config:
+          (response.config as Record<string, unknown> | undefined) ?? {
+            note: 'sidecar did not report config',
+          },
+        sessionLogDir: rt.log?.dir ?? null,
+      });
+      rt.log?.event('info', 'experiment-start', {
+        dir: experiment.directory,
+        map: loaded.name,
+      });
+    } catch (err) {
+      experiment = null;
+      rt.log?.error('experiment-start-failed', { message: (err as Error).message });
+      await leaveLocalization('experiment-failed');
+      return { ok: false, message: `实验目录创建失败：${(err as Error).message}` };
+    }
+
+    send('evt:mode', slamModeView());
+    sendExperiment();
+    // 进入定位即结束本次建图会话：避免之后保存出「旧地图 + 新轨迹」的混合包
+    slamLog.clear();
+    rt.log?.event('info', 'localization-start', { name: loaded.name, dir: loaded.dir });
+    return { ok: true, name: loaded.name, message: `已加载 ${loaded.name}，开始定位` };
+  });
+
+  ipcMain.handle('localization:stop', async (): Promise<MapLoadView> => {
+    if (mode !== 'localization') return { ok: true, message: '当前不在定位模式' };
+    await leaveLocalization('stopped');
+    rt.log?.event('info', 'localization-stop');
+    return { ok: true, message: '已停止定位，回到建图模式' };
+  });
+
+  ipcMain.handle('localization:pose', async (_e, p: { x: number; y: number; yaw: number }): Promise<MapLoadView> => {
+    if (!rt.algo || mode !== 'localization') return { ok: false, message: '未进入定位模式' };
+    const x = Number(p?.x);
+    const y = Number(p?.y);
+    const yaw = Number(p?.yaw);
+    if (![x, y, yaw].every(Number.isFinite)) return { ok: false, message: '初始位姿无效' };
+    rt.algo.setInitialPose(x, y, yaw);
+    experiment?.event('manual-pose', { x, y, yaw });
+    return { ok: true, message: '已设置初始位姿' };
+  });
+
+  ipcMain.handle('localization:clear-pose', async (): Promise<MapLoadView> => {
+    if (!rt.algo || mode !== 'localization') return { ok: false, message: '未进入定位模式' };
+    rt.algo.clearPose();
+    experiment?.event('manual-global-search', {});
+    return { ok: true, message: '已清空位姿，下一帧重新全局定位' };
+  });
+
+  ipcMain.handle('localization:info', (): LocalizationStateView | null => locState);
+
+  ipcMain.handle('experiments:info', (): ExperimentStatusView => experiment?.stats() ?? experimentOff());
+
+  ipcMain.handle('experiments:open', async (): Promise<{ ok: boolean; message: string }> => {
+    if (!experiment) return { ok: false, message: '当前没有实验记录' };
+    const err = await shell.openPath(experiment.directory);
+    return err ? { ok: false, message: err } : { ok: true, message: experiment.directory };
+  });
+
+  ipcMain.handle('experiments:finalize', async (): Promise<{ ok: boolean; message: string }> => {
+    if (!experiment) return { ok: false, message: '当前没有实验记录' };
+    const dir = experiment.directory;
+    await stopExperiment('manual');
+    return { ok: true, message: dir };
+  });
+
+  rt.finalizeExperiment = () => {
+    if (experiment) {
+      const rec = experiment;
+      experiment = null;
+      void rec.finalize('app-quit');
+    }
+  };
 
   ipcMain.on('ui:cmd', (_e, msg: { throttle: number; rudder: number }) => {
     const throttle = Number(msg?.throttle) || 0;
@@ -76,6 +312,13 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
   });
 
   ipcMain.on('algo:reset', () => {
+    if (mode === 'localization') {
+      console.log('[ui] 清空定位位姿');
+      rt.log?.event('info', 'ui-clear-pose');
+      rt.algo?.clearPose();
+      experiment?.event('manual-global-search', { via: 'clear-map' });
+      return;
+    }
     console.log('[ui] 清空 SLAM 地图');
     rt.log?.event('info', 'ui-clear-map');
     slamLog.clear();
@@ -293,6 +536,10 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
     };
     send('evt:scan', view);
     rt.algo?.pushScan(scan);
+    if (mode === 'localization' && experiment) {
+      const tStart = 'tStartMs' in scan ? (scan as { tStartMs?: number }).tStartMs : undefined;
+      experiment.scan(scan, tStart, recvMs);
+    }
   });
 
   rt.link.on('state', (state: LinkStateView) => send('evt:link', state));
@@ -303,13 +550,73 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
 
   rt.discovery?.on('ships', (ships) => send('evt:ships', ships));
   rt.algo?.on('pose', (pose: PoseView) => {
-    slamLog.onPose(pose);
+    if (pose.mode === 'localization') {
+      experiment?.pose(pose);
+    } else {
+      slamLog.onPose(pose);
+    }
     send('evt:pose', pose);
   });
   rt.algo?.on('map', (map: MapView) => {
-    slamLog.onMap(map);
+    // 先验地图只用于显示，绝不混进建图录制
+    if (!map.prior) slamLog.onMap(map);
     send('evt:map', map);
   });
+  rt.algo?.on('localization', (raw: Record<string, unknown>) => {
+    const state = raw as unknown as LocalizationStateView;
+    locState = {
+      phase: state.phase,
+      message: state.message,
+      map: state.map ?? loaded?.name ?? null,
+      frames: state.frames ?? 0,
+      trackingFrames: state.trackingFrames ?? 0,
+      candidates: state.candidates ?? [],
+      metrics: state.metrics ?? {
+        rmse: null,
+        inlier: 0,
+        coverage: 0,
+        matched: 0,
+        points: 0,
+        confidence: 0,
+        dtMs: 0,
+        candidates: 0,
+        margin: null,
+      },
+    };
+    experiment?.localizationState(locState);
+    send('evt:loc', locState);
+    sendExperiment();
+  });
+  rt.algo?.on('map-loaded', (raw: Record<string, unknown>) => {
+    if (mapLoadWaiter) {
+      const resolve = mapLoadWaiter;
+      mapLoadWaiter = null;
+      resolve(raw);
+    }
+    send('evt:map-loaded', {
+      ok: raw.ok === true,
+      name: typeof raw.name === 'string' ? raw.name : undefined,
+      message: typeof raw.message === 'string' ? raw.message : '',
+    });
+    if (raw.ok !== true) {
+      rt.log?.error('map-load-failed', { message: raw.message });
+      experiment?.event('map-load-failed', { message: raw.message });
+    } else {
+      experiment?.event('map-loaded', {
+        name: raw.name,
+        occupied: raw.occupied,
+        free: raw.free,
+      });
+    }
+  });
+  rt.algo?.on('map-unloaded', () => {
+    experiment?.event('map-unloaded', {});
+  });
   rt.algo?.on('health', (h: AlgoHealthView) => send('evt:algo', h));
-  rt.algo?.on('log', (line: string) => console.log(line));
+  rt.algo?.on('log', (line: string) => {
+    console.log(line);
+    if (/退出 code=|spawn 失败|非法输出/.test(line)) {
+      experiment?.event('algo-log', { line: line.slice(0, 500) });
+    }
+  });
 }

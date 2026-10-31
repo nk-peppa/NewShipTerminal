@@ -69,6 +69,8 @@ npm run log:50hz  # 真 50Hz 突发压力：收帧 = CSV 行 = 原始流帧，�
 | `--no-log` | 关闭会话日志（默认启动即自动记录） |
 | `--log-dir <path>` | 指定日志根目录（默认 `%APPDATA%\usv-terminal\logs`） |
 | `--log-keep <n>` | 保留最近多少次会话（默认 20，单次约 15 MB） |
+| `--maps-dir <path>` | 地图库目录（默认与日志同父目录的 `maps\`） |
+| `--experiments-dir <path>` | 定位实验目录（默认同父目录的 `experiments\`） |
 | 无参数 | **实机模式**：自动发现 + 9527/9530 |
 
 环境变量：`USV_DEBUG=1` 每秒打印链路统计与渲染进程诊断；`USV_SHOT=<png>` 启动 2.5 s 后自截图。
@@ -77,12 +79,14 @@ npm run log:50hz  # 真 50Hz 突发压力：收帧 = CSV 行 = 原始流帧，�
 
 ```
 src/shared/   protocol.ts（协议 v1 + Scan2D）、api.ts（IPC 契约）
-src/main/     index.ts / config.ts / link / safety / ipc / algo / log
+src/main/     index.ts / config.ts / link / safety / ipc / algo / maps / experiments / log
 src/preload/  contextBridge 白名单
-src/renderer/ index.html / main.ts / radar.ts / style.css
-test/         协议 + 会话日志单测（node:test）
-tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ algo-sidecar.py / copy-assets.mjs
-              slam-export-check.cjs（导出 ZIP 自检）/ package-release.mjs（打发布包）
+src/renderer/ index.html / main.ts / radar.ts / slamMap.ts / style.css
+test/         协议 + 会话日志 + 地图库 + 实验记录单测（node:test）
+algo/         cocommand2d（vendor SLAM）、localization（先验地图定位）、run_slam.py
+tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ algo-sidecar.py
+              slam-export-check.cjs（导出 ZIP 自检）/ map-localization-check.cjs（定位 E2E）
+              package-release.mjs（打发布包）
 ```
 
 ## 已验证（2026-10-30 更新）
@@ -96,6 +100,9 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 | 10 分钟满 session | 内存 407–440MB 无泄漏，日志 15.5MB，0 错误；离线回放 5540 帧 TRACKING |
 | 日志 ZIP 实导 | 经 PowerShell `Expand-Archive` 反向验证：11 个文件、原始帧可还原 |
 | SLAM 导出 | 22/22 通过（真仿真 + 真侧车，ZIP 经 `Expand-Archive` 反向验证） |
+| 地图库 / 实验记录 | 9 项通过（目录、meta/hash、原子写、重名、旧地图兜底、CSV/JSONL/summary） |
+| 定位算法 | 11 项通过（PGM/YAML、距离场、局部/全局、对称场景候选、指标边界） |
+| 定位 E2E | 22/22 通过（仿真建图 → 地图库 → 全局定位 0.09 m；实验 299 帧全 tracking） |
 | UI 实跑 | 假船端 450 点 @9.2 圈/s，雷达 PPI、状态卡、SLAM 位姿均正常 |
 | Python 侧车 | `TRACKING`，累计处理 18 圈，重启 0 次 |
 | 发布包实跑（0.1.0） | 打包后 exe 直连仿真：侧车从包内启动、SLAM 建图、真实保存对话框导出 ZIP（7329 B / 5 文件）成功 |
@@ -113,6 +120,9 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 | `trajectory.csv` | 位姿序列 `t_ms,x_m,y_m,yaw_rad,yaw_deg,status,rmse_m,inlier` |
 | `session.json` | 本次运行元信息（固件版本、栅格参数、位数、末位姿、导出时间） |
 
+同样的内容也可以通过主栏「地图库 → 保存当前地图」直接存成目录（多一个 `meta.json`），
+供定位算法加载；ZIP 导出保留给「发给别人」的场景。
+
 要点：
 
 - 录制在**主进程**里做（地图留最新一张，轨迹累积到 10 万点 ≈ 2.8 小时），
@@ -125,6 +135,55 @@ tools/        sim-boat.cjs（假船端）/ link-smoke.cjs（端到端自检）/ 
 
 自检：`npm run slam:export`（真仿真 + 真侧车 + 真 ZIP，并用 PowerShell 的
 `Expand-Archive` 反向验证 ZIP 合法，共 22 项）。
+
+## 地图库与定位（feat/map-localization）
+
+主栏现在有四个子页面：**实时地图 / 地图库 / 定位 / 实验**（手柄 **View** 键打开/关闭，
+**B / Esc** 返回实时地图）。右侧「SLAM」段保留实时位姿、模式与指标。
+
+### 存储
+
+与日志同一父目录，不在程序目录（release 自动更新不会覆盖数据）：
+
+```
+%APPDATA%\usv-terminal\
+├─ logs\session-YYYYMMDD-HHmmss\        会话日志（原有）
+├─ maps\<地图名>\                        地图库
+│  ├─ map.pgm / map.yaml / map.png
+│  ├─ trajectory.csv / session.json
+│  └─ meta.json                          尺寸/分辨率/origin/hash/船端信息
+└─ experiments\YYYYMMDD-HHmmss\          定位实验（边跑边落盘）
+   ├─ localization.csv
+   ├─ scans.jsonl                        Scan v1，可直接回放
+   ├─ events.jsonl
+   ├─ config.json / meta.json
+   ├─ map.png / map.pgm / map.yaml
+   └─ summary.json
+```
+
+启动参数 `--maps-dir` / `--experiments-dir` 可覆盖；`--log-dir` 改变时按同一父目录推导。
+保存地图用「临时目录 + rename」，同名自动追加 `-2`/`-3`，绝不覆盖已有地图。
+
+### 定位
+
+- 侧车协议升级到 `api: 3`：`load_map` / `set_initial_pose` / `clear_pose` / `unload_map`，
+  并回 `map_loaded` / `localization` / 带 `mode=localization` 的 `pose`。
+- 算法在 `algo/localization/`（vendor 的 `algo/cocommand2d/` 不改）：
+  先验地图距离场 + Gauss-Newton + 两级局部细化；启动时整图粗搜索（0.6 m / 10°），
+  多帧投票消除歧义。低置信度输出 `AMBIGUOUS`，不会静默采用错误位姿。
+- 自动全局定位失败/多峰时，用「点选初始位姿」：第 1 下点位置、第 2 下点朝向；
+  也可用「用地图原点」（建图起点 `(0,0,0)`）。
+- 定位只用地图、不写地图；`poseValid` 只在 `tracking` 为 true。
+- 实验记录在主进程异步写入，队列超过 8 MB 丢扫描并计数，不反压 50 Hz 控制环。
+
+### 自检
+
+```powershell
+npm run map:localize   # 仿真建图 → 地图库 → 加载 → 自动全局定位 → 实验落盘
+```
+
+仿真结果：定位误差约 0.09 m / 0.1°，单帧约 38–41 ms（首帧全局搜索约 0.9 s），
+`scans_dropped = 0`。合成/仿真精度不代表实船精度，实船需用现场记录复核。
 
 ## 会话日志（debug / 实验原始数据）
 

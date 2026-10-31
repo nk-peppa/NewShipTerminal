@@ -84,21 +84,39 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 | `evt:status` | 主 → 渲染 | 20Hz | `StatusView` |
 | `evt:scan` | 主 → 渲染 | ~10Hz | `ScanView`（TypedArray） |
 | `evt:link` / `evt:ships` | 主 → 渲染 | 1Hz / 变更 | 链路与在场船只 |
-| `evt:pose` / `evt:algo` | 主 → 渲染 | 10Hz / 1Hz | SLAM 位姿与算法健康 |
+| `evt:pose` / `evt:algo` | 主 → 渲染 | 10Hz / 1Hz | SLAM / 定位位姿与算法健康 |
+| `evt:map` | 主 → 渲染 | 2Hz / 事件 | 建图栅格或先验地图（`prior=true`） |
+| `evt:loc` | 主 → 渲染 | ≤2Hz / 变更 | 定位相位、候选、指标 |
+| `evt:experiment` | 主 → 渲染 | 变更 | 定位实验目录与计数 |
+| `maps:list/save/delete/open` | 渲染 → 主 | 事件 | 地图库 |
+| `localization:start/stop/pose/clear-pose/info` | 渲染 → 主 | 事件 | 先验地图定位 |
+| `experiments:info/open/finalize` | 渲染 → 主 | 事件 / 2s | 定位实验 |
 | `log:info` | 渲染 → 主 | 2s 轮询 | 会话日志大小 / 行数 / 失败原因 |
 | `log:open` / `log:save` | 渲染 → 主 | 事件 | 打开日志目录 / 导出 ZIP |
 
-### 3.4 Python 侧车协议（v0）
+### 3.4 Python 侧车协议（api 3）
 
 ```
 → {"type":"scan","t":<ms>,"angles":[rad],"ranges":[m],"qualities":[u8]}
 ← {"type":"pose","t":<ms>,"x":0,"y":0,"yaw":0,"status":"TRACKING","covariance":[9]}
+→ {"type":"load_map","path":"<abs map.yaml>"}       // 进入定位模式
+→ {"type":"set_initial_pose","x":0,"y":0,"yaw":0}
+→ {"type":"clear_pose"}                             // 重新全局定位
+→ {"type":"unload_map"}                             // 回到建图模式
+← {"type":"map_loaded","ok":true,"config":{...},"size":500,"resolution":0.08,"origin":[x,y]}
+← {"type":"localization","phase":"waiting|searching|tracking|lost|ambiguous","metrics":{...}}
+← {"type":"pose","mode":"localization","phase":"tracking","confidence":0.9,...}
+← {"type":"map","prior":true,"png":"<base64>",...}
 → {"type":"ping"}          ← {"type":"pong"}
 ```
 
 - 逐行 JSON，UTF-8；单行可能较大（500 点约 15KB），本地管道可接受。
-- v1 升级方向：长度前缀 + `Float32` 二进制，或共享内存环。契约不变，只换编码层。
-- 启动时算法应输出 `{"type":"ready","api":1}`；主进程据此判定版本兼容。
+- `ready` / `map_loaded` 带 `api` 与定位参数；主进程缓存当前地图与初始位姿，
+  侧车崩溃重启后自动重发 `load_map`（实验继续记录）。
+- 建图位姿不带 `mode`；定位位姿带 `mode:"localization"` 与
+  `phase/rmse/inlier/coverage/confidence/matched/dtMs/candidates/margin`。
+- 定位算法在 `algo/localization/`，只读引用 vendor 的 `Scan` / `prepare_scan`。
+- 启动时算法应输出 `{"type":"ready","api":3}`；主进程据此判定版本兼容。
 
 ## 4. 安全设计
 
@@ -118,12 +136,22 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 desktop/
 ├─ src/
 │  ├─ shared/       protocol.ts（协议编解码 + Scan2D）、api.ts（IPC 契约类型）
-│  ├─ main/         index.ts / config.ts / link / safety / ipc / algo / log
+│  ├─ main/         index.ts / config.ts / link / safety / ipc / algo / maps / experiments / log
 │  ├─ preload/      contextBridge 白名单
-│  └─ renderer/     index.html / main.ts / radar.ts / style.css
-├─ test/            黄金帧与解析器单测（node:test）
-├─ tools/           sim-boat.cjs（假船端）/ link-smoke.cjs / algo-sidecar.py / copy-assets.mjs
-└─ docs/            本文档
+│  └─ renderer/     index.html / main.ts / radar.ts / slamMap.ts / style.css
+├─ algo/            cocommand2d（vendor SLAM）、localization（先验地图定位）
+├─ test/            协议 + 会话日志 + 地图库 + 实验记录单测（node:test）
+├─ tools/           sim-boat.cjs / link-smoke.cjs / algo-sidecar.py
+│                   slam-export-check.cjs / map-localization-check.cjs
+└─ docs/            本文档 + slam-integration.md
+```
+
+运行数据（与日志同一父目录，默认 `%APPDATA%\usv-terminal`）：
+
+```
+logs/session-YYYYMMDD-HHmmss/     会话日志
+maps/<name>/                      map.pgm/yaml/png + trajectory + session + meta.json
+experiments/YYYYMMDD-HHmmss/      localization.csv + scans.jsonl + events + summary + 地图副本
 ```
 
 构建：
@@ -131,7 +159,9 @@ desktop/
 | 命令 | 作用 |
 |---|---|
 | `npm run build` | tsc（主进程/预加载 + 渲染进程类型检查）+ esbuild（渲染）+ 复制静态资源 |
-| `npm test` | 协议黄金帧 + 分片 + CRC + zlib + 会话日志格式 |
+| `npm test` | 协议黄金帧 + 分片 + CRC + zlib + 会话日志 + 地图库 + 实验记录 |
+| `npm run algo:test` | Python：SLAM 回归 + 先验地图定位单测 |
+| `npm run map:localize` | 仿真建图 → 地图库 → 自动全局定位 → 实验落盘（E2E） |
 | `npm run smoke` | 假船端 ⇄ 真实链路：50Hz、未解锁不输出、解锁、急停、UI 超时、日志落盘 |
 | `npm start` | 启动应用（需先 `npm run sim` 或接实船） |
 | `npm run sim` | 只启动假船端 |

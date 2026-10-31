@@ -1,8 +1,12 @@
 import type {
   AlgoHealthView,
+  ExperimentStatusView,
+  LocalizationStateView,
+  MapEntryView,
   MapView,
   PoseView,
   ShipView,
+  SlamModeView,
   StatusView,
   UsvApi,
 } from '../shared/api.js';
@@ -63,6 +67,46 @@ const el = {
   saveSlamBtn: $<HTMLButtonElement>('save-slam-btn'),
   saveSlamKey: $('save-slam-key'),
   slamIo: $('slam-io'),
+  slamMode: $('slam-mode'),
+  openMapsBtn: $<HTMLButtonElement>('open-maps-btn'),
+  openMapsKey: $('open-maps-key'),
+  tabLive: $<HTMLButtonElement>('tab-live'),
+  tabLibrary: $<HTMLButtonElement>('tab-library'),
+  tabLocalize: $<HTMLButtonElement>('tab-localize'),
+  tabExperiment: $<HTMLButtonElement>('tab-experiment'),
+  pageLive: $('page-live'),
+  pageLibrary: $('page-library'),
+  pageLocalize: $('page-localize'),
+  pageExperiment: $('page-experiment'),
+  mapName: $<HTMLInputElement>('map-name'),
+  mapSaveBtn: $<HTMLButtonElement>('map-save-btn'),
+  mapExportBtn: $<HTMLButtonElement>('map-export-btn'),
+  mapRefreshBtn: $<HTMLButtonElement>('map-refresh-btn'),
+  mapOpenDirBtn: $<HTMLButtonElement>('map-open-dir-btn'),
+  mapList: $('map-list'),
+  mapIo: $('map-io'),
+  locMap: $('loc-map'),
+  locPhase: $('loc-phase'),
+  locMessage: $('loc-message'),
+  locStartBtn: $<HTMLButtonElement>('loc-start-btn'),
+  locStopBtn: $<HTMLButtonElement>('loc-stop-btn'),
+  locGlobalBtn: $<HTMLButtonElement>('loc-global-btn'),
+  locPickBtn: $<HTMLButtonElement>('loc-pick-btn'),
+  locOriginBtn: $<HTMLButtonElement>('loc-origin-btn'),
+  locPose: $('loc-pose'),
+  locQuality: $('loc-quality'),
+  locConfidence: $('loc-confidence'),
+  locTiming: $('loc-timing'),
+  locHint: $('loc-hint'),
+  locIo: $('loc-io'),
+  expDir: $('exp-dir'),
+  expDuration: $('exp-duration'),
+  expPhases: $('exp-phases'),
+  expScans: $('exp-scans'),
+  expSize: $('exp-size'),
+  expOpenBtn: $<HTMLButtonElement>('exp-open-btn'),
+  expFinalizeBtn: $<HTMLButtonElement>('exp-finalize-btn'),
+  expIo: $('exp-io'),
   logInfo: $('log-info'),
   logOpenBtn: $<HTMLButtonElement>('log-open-btn'),
   logSaveBtn: $<HTMLButtonElement>('log-save-btn'),
@@ -97,6 +141,17 @@ const state = {
   lastFrameAt: 0,
   armWarnUntil: 0,
   estopWarnUntil: 0,
+  /** 主栏子页面 */
+  page: 'live' as Page,
+  slamMode: 'mapping' as 'mapping' | 'localization',
+  loadedMap: null as string | null,
+  selectedMap: null as string | null,
+  maps: [] as MapEntryView[],
+  loc: null as LocalizationStateView | null,
+  experiment: null as ExperimentStatusView | null,
+  /** 初始位姿点选：先点位置，再点朝向 */
+  pickMode: false,
+  pickPos: null as { x: number; y: number } | null,
 };
 
 const radar = new RadarView();
@@ -111,6 +166,346 @@ const WARN_SVG = xboxIcon('warn', { size: 24 });
 const ctx = el.canvas.getContext('2d')!;
 const slamMap = new SlamMapView();
 const mapCtx = el.mapCanvas.getContext('2d')!;
+
+/* ---------------- 主栏子页面：实时地图 / 地图库 / 定位 / 实验 ---------------- */
+
+type Page = 'live' | 'library' | 'localize' | 'experiment';
+
+const TABS: Array<{ page: Exclude<Page, 'live'>; tab: HTMLButtonElement; body: HTMLElement }> = [
+  { page: 'library', tab: el.tabLibrary, body: el.pageLibrary },
+  { page: 'localize', tab: el.tabLocalize, body: el.pageLocalize },
+  { page: 'experiment', tab: el.tabExperiment, body: el.pageExperiment },
+];
+
+function setPage(page: Page): void {
+  state.page = page;
+  el.tabLive.classList.toggle('on', page === 'live');
+  el.pageLive.classList.toggle('on', page === 'live');
+  for (const item of TABS) {
+    item.tab.classList.toggle('on', page === item.page);
+    item.body.classList.toggle('on', page === item.page);
+  }
+  if (page === 'library') void refreshMaps();
+  if (page === 'experiment') void refreshExperiment();
+  if (page === 'localize') updateLocButtons();
+}
+
+el.tabLive.addEventListener('click', () => setPage('live'));
+for (const item of TABS) item.tab.addEventListener('click', () => setPage(item.page));
+el.openMapsBtn.addEventListener('click', () => setPage(state.page === 'live' ? 'library' : 'live'));
+el.openMapsKey.innerHTML = xboxIcon('view', { size: 24, title: 'View 键：打开地图库' });
+
+/* ---- 地图库 ---- */
+
+function fmtBytesShort(n: number): string {
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
+  return `${(n / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function refreshMaps(): Promise<void> {
+  try {
+    state.maps = await window.usv.listMaps();
+  } catch (err) {
+    el.mapIo.textContent = `读取地图库失败：${(err as Error).message}`;
+    return;
+  }
+  if (state.selectedMap && !state.maps.some((m) => m.name === state.selectedMap)) {
+    state.selectedMap = null;
+  }
+  if (!state.selectedMap && state.maps[0]) state.selectedMap = state.maps[0].name;
+  renderMaps();
+  updateLocButtons();
+}
+
+function renderMaps(): void {
+  el.mapList.replaceChildren();
+  if (!state.maps.length) {
+    const empty = document.createElement('div');
+    empty.className = 'muted';
+    empty.textContent = '还没有地图。先建图，然后在上面命名并保存。';
+    el.mapList.appendChild(empty);
+    return;
+  }
+  for (const m of state.maps) {
+    const row = document.createElement('div');
+    row.className = 'map-row';
+    row.classList.toggle('selected', m.name === state.selectedMap);
+    row.addEventListener('click', () => {
+      state.selectedMap = m.name;
+      renderMaps();
+      updateLocButtons();
+    });
+
+    const name = document.createElement('div');
+    name.className = 'map-name';
+    name.textContent = m.name;
+    row.appendChild(name);
+
+    const actions = document.createElement('div');
+    actions.className = 'map-actions';
+    const useBtn = document.createElement('button');
+    useBtn.className = 'btn sm';
+    useBtn.textContent = '定位';
+    useBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      state.selectedMap = m.name;
+      void startLocalization();
+    });
+    const delBtn = document.createElement('button');
+    delBtn.className = 'btn sm';
+    delBtn.textContent = '删除';
+    delBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void deleteMap(m.name);
+    });
+    actions.append(useBtn, delBtn);
+    row.appendChild(actions);
+
+    const sub = document.createElement('div');
+    sub.className = 'map-sub';
+    const when = m.createdAt ? new Date(m.createdAt).toLocaleString() : '时间未知';
+    const bits = [
+      when,
+      `${m.size}×${m.size} @ ${m.resolution} m`,
+      `占据 ${m.occupied ?? '?'}`,
+      `轨迹 ${m.poses} 帧`,
+      fmtBytesShort(m.bytes),
+    ];
+    if (m.hash) bits.push(m.hash.slice(0, 15));
+    sub.textContent = bits.join(' · ') + (m.warning ? ` · ⚠ ${m.warning}` : '');
+    row.appendChild(sub);
+    el.mapList.appendChild(row);
+  }
+}
+
+async function saveMap(): Promise<void> {
+  el.mapIo.textContent = '正在保存…';
+  const name = el.mapName.value.trim();
+  const r = await window.usv.saveMap(name || undefined);
+  if (r.ok) {
+    el.mapIo.textContent = `已保存地图 ${r.name}（${fmtBytesShort(r.bytes ?? 0)}）`;
+    el.mapName.value = '';
+    state.selectedMap = r.name ?? null;
+    await refreshMaps();
+  } else {
+    el.mapIo.textContent = r.message;
+  }
+}
+
+async function deleteMap(name: string): Promise<void> {
+  const r = await window.usv.deleteMap(name);
+  el.mapIo.textContent = r.ok ? `已删除 ${name}` : r.message;
+  if (r.ok && state.selectedMap === name) state.selectedMap = null;
+  await refreshMaps();
+}
+
+async function openMapsDir(): Promise<void> {
+  const r = await window.usv.openMapsDir();
+  el.mapIo.textContent = r.ok ? r.message : r.message;
+}
+
+el.mapSaveBtn.addEventListener('click', () => void saveMap());
+el.mapRefreshBtn.addEventListener('click', () => void refreshMaps());
+el.mapOpenDirBtn.addEventListener('click', () => void openMapsDir());
+el.mapExportBtn.addEventListener('click', () => void saveSlam());
+
+/* ---- 定位 ---- */
+
+function updateLocButtons(): void {
+  const loc = state.slamMode === 'localization';
+  el.locStartBtn.disabled = loc || state.maps.length === 0;
+  el.locStopBtn.disabled = !loc;
+  el.locGlobalBtn.disabled = !loc;
+  el.locPickBtn.disabled = !loc;
+  el.locOriginBtn.disabled = !loc;
+  el.locMap.textContent = state.loadedMap ? `地图：${state.loadedMap}` : '未加载地图';
+}
+
+function applyMode(m: SlamModeView): void {
+  state.slamMode = m.mode;
+  state.loadedMap = m.mapName;
+  const label = el.clearMapBtn.querySelector('.btn-label');
+  if (label) label.textContent = m.mode === 'localization' ? '重新定位' : '清空地图';
+  el.slamMode.textContent =
+    `模式：${m.mode === 'localization' ? '定位' : '建图'}` + (m.mapName ? ` · ${m.mapName}` : '');
+  updateLocButtons();
+}
+
+async function startLocalization(): Promise<void> {
+  const name = state.selectedMap ?? state.maps[0]?.name;
+  if (!name) {
+    el.locIo.textContent = '还没有地图，先在「地图库」保存一张。';
+    return;
+  }
+  el.locIo.textContent = `正在加载 ${name}…`;
+  // 先清掉建图栅格：侧车会在 map_loaded 之后立刻推先验地图，
+  // 若等 invoke 返回再 reset，会把刚收到的先验地图一起擦掉。
+  slamMap.reset();
+  slamMap.prior = true;
+  state.pickMode = false;
+  state.pickPos = null;
+  const r = await window.usv.startLocalization(name);
+  el.locIo.textContent = r.message;
+  if (r.ok) {
+    setPage('live');
+    void refreshExperiment();
+  } else {
+    slamMap.prior = false;
+  }
+}
+
+async function stopLocalization(): Promise<void> {
+  const r = await window.usv.stopLocalization();
+  el.locIo.textContent = r.message;
+  slamMap.reset();
+  slamMap.prior = false;
+  state.loc = null;
+  state.pickMode = false;
+  setPage('live');
+  void refreshExperiment();
+}
+
+async function globalSearch(): Promise<void> {
+  const r = await window.usv.clearPose();
+  el.locIo.textContent = r.message;
+}
+
+async function applyInitialPose(x: number, y: number, yaw: number): Promise<void> {
+  const r = await window.usv.setInitialPose(x, y, yaw);
+  el.locIo.textContent = `${r.message}（x=${x.toFixed(2)}, y=${y.toFixed(2)}, yaw=${((yaw * 180) / Math.PI).toFixed(1)}°）`;
+  slamMap.clearPick();
+  state.pickMode = false;
+  state.pickPos = null;
+  el.locHint.textContent = '已设置初始位姿，下一帧开始局部跟踪。';
+}
+
+function beginPick(): void {
+  if (state.slamMode !== 'localization') return;
+  state.pickMode = true;
+  state.pickPos = null;
+  slamMap.clearPick();
+  setPage('live');
+  el.locHint.textContent = '点选初始位姿：第 1 下设位置，第 2 下设朝向；Esc 取消。';
+}
+
+el.locStartBtn.addEventListener('click', () => void startLocalization());
+el.locStopBtn.addEventListener('click', () => void stopLocalization());
+el.locGlobalBtn.addEventListener('click', () => void globalSearch());
+el.locPickBtn.addEventListener('click', () => beginPick());
+el.locOriginBtn.addEventListener('click', () => void applyInitialPose(0, 0, 0));
+
+el.mapCanvas.addEventListener('click', (e) => {
+  if (!state.pickMode) return;
+  const rect = el.mapCanvas.getBoundingClientRect();
+  const dpr = el.mapCanvas.width / Math.max(rect.width, 1);
+  const px = (e.clientX - rect.left) * dpr;
+  const py = (e.clientY - rect.top) * dpr;
+  const world = slamMap.screenToWorld(px, py, el.mapCanvas.width, el.mapCanvas.height);
+  if (!state.pickPos) {
+    state.pickPos = world;
+    slamMap.setPickPosition(world.x, world.y);
+    el.locHint.textContent = '已选位置，再点一下设置船头朝向。';
+    setPage('live');
+    return;
+  }
+  const yaw = Math.atan2(world.y - state.pickPos.y, world.x - state.pickPos.x);
+  slamMap.setPickYaw(yaw);
+  void applyInitialPose(state.pickPos.x, state.pickPos.y, yaw);
+});
+
+function renderLoc(s: LocalizationStateView | null): void {
+  state.loc = s;
+  if (!s) {
+    el.locPhase.textContent = '—';
+    el.locPhase.className = 'loc-phase idle';
+    el.locMessage.textContent = '在地图库选择一张地图，然后点「开始定位」。';
+    el.locPose.textContent = '—';
+    el.locQuality.textContent = '—';
+    el.locConfidence.textContent = '—';
+    el.locTiming.textContent = '—';
+    return;
+  }
+  const phase = s.phase.toLowerCase();
+  el.locPhase.textContent =
+    phase === 'tracking'
+      ? 'TRACKING 跟踪'
+      : phase === 'searching'
+        ? 'SEARCHING 搜索'
+        : phase === 'ambiguous'
+          ? 'AMBIGUOUS 歧义'
+          : phase === 'lost'
+            ? 'LOST 丢失'
+            : 'WAITING 等待';
+  el.locPhase.className = `loc-phase ${phase}`;
+  el.locMessage.textContent = s.message;
+  const p = state.pose;
+  el.locPose.textContent = p
+    ? `x=${p.x.toFixed(2)} m  y=${p.y.toFixed(2)} m  yaw=${((p.yaw * 180) / Math.PI).toFixed(1)}°`
+    : '—';
+  el.locQuality.textContent =
+    `残差 ${s.metrics.rmse == null ? '—' : `${(s.metrics.rmse * 100).toFixed(1)} cm`} · ` +
+    `内点 ${(s.metrics.inlier * 100).toFixed(0)}%`;
+  el.locConfidence.textContent =
+    `置信 ${(s.metrics.confidence * 100).toFixed(0)}% · 匹配 ${s.metrics.matched} 点 · ` +
+    `覆盖 ${(s.metrics.coverage * 100).toFixed(0)}%`;
+  el.locTiming.textContent =
+    `${s.metrics.dtMs.toFixed(0)} ms/帧 · 候选 ${s.metrics.candidates}` +
+    (s.metrics.margin == null ? '' : ` · 优势 ${(s.metrics.margin * 100).toFixed(0)}%`);
+  if (phase === 'ambiguous' || phase === 'lost') {
+    el.locHint.textContent = '自动定位不确定：点「点选初始位姿」在地图上指定位置与朝向，或检查地图/雷达。';
+  } else if (phase === 'tracking') {
+    el.locHint.textContent = '跟踪中。指标持续变差或反复丢失时，考虑重新全局定位。';
+  }
+}
+
+/* ---- 实验 ---- */
+
+function renderExperiment(s: ExperimentStatusView | null): void {
+  state.experiment = s;
+  if (!s || !s.dir) {
+    el.expDir.textContent = '—';
+    el.expDuration.textContent = '—';
+    el.expPhases.textContent = '—';
+    el.expScans.textContent = '—';
+    el.expSize.textContent = '—';
+    el.expOpenBtn.disabled = true;
+    el.expFinalizeBtn.disabled = true;
+    return;
+  }
+  const seconds = Math.floor(s.durationMs / 1000);
+  el.expDir.textContent = s.dir;
+  el.expDuration.textContent = `${Math.floor(seconds / 60)}分${String(seconds % 60).padStart(2, '0')}秒 · ${s.frames} 帧`;
+  el.expPhases.textContent = `跟踪 ${s.tracking} · 丢失 ${s.lost} · 歧义 ${s.ambiguous}`;
+  el.expScans.textContent = `${s.scans} 圈` + (s.scansDropped ? `（丢弃 ${s.scansDropped}）` : '');
+  el.expSize.textContent = `${fmtBytesShort(s.bytes)} · ${s.map ?? '—'}` + (s.error ? ` · ⚠ ${s.error}` : '');
+  el.expOpenBtn.disabled = false;
+  el.expFinalizeBtn.disabled = !s.active;
+  el.expIo.textContent = s.active ? '正在记录…' : '已归档';
+}
+
+async function refreshExperiment(): Promise<void> {
+  try {
+    renderExperiment(await window.usv.getExperiment());
+  } catch {
+    renderExperiment(null);
+  }
+}
+
+el.expOpenBtn.addEventListener('click', async () => {
+  const r = await window.usv.openExperimentDir();
+  el.expIo.textContent = r.message;
+});
+el.expFinalizeBtn.addEventListener('click', async () => {
+  const r = await window.usv.finalizeExperiment();
+  el.expIo.textContent = r.message;
+  await refreshExperiment();
+});
+
+window.setInterval(() => {
+  if (state.page === 'experiment') void refreshExperiment();
+}, 2000);
+
 
 /* ---------------- 手柄菜单导航 ---------------- */
 
@@ -279,8 +674,11 @@ function pollMapPad(dtMs: number): void {
     prevDpadUp = up;
     return;
   }
+  // ---- B 键：从子页面回到实时地图（菜单模式里由 padMenu 处理） ----
+  const bKey = !!pad.buttons[1]?.pressed;
+  if (bKey && !prevB && state.page !== 'live') setPage('live');
+  prevB = bKey;
   prevA = !!pad.buttons[0]?.pressed;
-  prevB = !!pad.buttons[1]?.pressed;
 
   // ---- R3（右摇杆按下，标准映射 buttons[11]）：视角三态循环 ----
   const r3 = !!pad.buttons[11]?.pressed;
@@ -324,9 +722,9 @@ function pollMapPad(dtMs: number): void {
   if (down && !prevDpadDown) toggleEstop();
   prevDpadDown = down;
 
-  // ---- View 键：导出 SLAM 数据（边沿触发） ----
+  // ---- View 键：打开/关闭主栏子页面（地图库 / 定位 / 实验） ----
   const view = !!pad.buttons[8]?.pressed;
-  if (view && !prevView) void saveSlam();
+  if (view && !prevView) setPage(state.page === 'live' ? 'library' : 'live');
   prevView = view;
 }
 
@@ -482,15 +880,19 @@ function scanHz(): number {
 function renderMapInfo(): void {
   const age = slamMap.lastMapAt ? Date.now() - slamMap.lastMapAt : Infinity;
   if (!Number.isFinite(age)) {
-    el.mapInfo.textContent = '等待 SLAM 地图…';
+    el.mapInfo.textContent = slamMap.prior ? '等待先验地图…' : '等待 SLAM 地图…';
     return;
   }
   const p = state.pose;
   const v = slamMap.viewInfo;
-  const bits = [
-    `占据格子 ${slamMap.observed}`,
-    p ? `位姿 (${p.x.toFixed(2)}, ${p.y.toFixed(2)}) ${((p.yaw * 180) / Math.PI).toFixed(1)}°` : '无位姿',
-  ];
+  const bits: string[] = [];
+  if (slamMap.prior) {
+    bits.push(`先验地图 ${state.loadedMap ?? ''}`.trim());
+    bits.push(state.loc ? state.loc.phase.toUpperCase() : 'WAITING');
+  } else {
+    bits.push(`占据格子 ${slamMap.observed}`);
+  }
+  bits.push(p ? `位姿 (${p.x.toFixed(2)}, ${p.y.toFixed(2)}) ${((p.yaw * 180) / Math.PI).toFixed(1)}°` : '无位姿');
   if (p?.rmse != null) bits.push(`残差 ${(p.rmse * 100).toFixed(1)}cm`);
   if (p?.inlier != null) bits.push(`内点 ${(p.inlier * 100).toFixed(0)}%`);
   const modeText =
@@ -500,7 +902,7 @@ function renderMapInfo(): void {
         ? `船头朝上 ${v.zoom.toFixed(2)}×`
         : '跟随船';
   bits.push(modeText);
-  if (age > 3000) bits.push('⚠ 地图已停止更新');
+  if (!slamMap.prior && age > 3000) bits.push('⚠ 地图已停止更新');
   el.mapInfo.textContent = bits.join(' · ');
 }
 
@@ -669,17 +1071,41 @@ window.usv.onPose((pose) => {
   const extra: string[] = [pose.status];
   if (pose.rmse != null) extra.push(`残差 ${(pose.rmse * 100).toFixed(1)}cm`);
   if (pose.inlier != null) extra.push(`内点 ${(pose.inlier * 100).toFixed(0)}%`);
+  if (pose.confidence != null) extra.push(`置信 ${(pose.confidence * 100).toFixed(0)}%`);
   if (pose.scans != null) extra.push(`${pose.scans} 圈`);
   el.poseStatus.textContent = extra.join(' · ');
 });
 
 window.usv.onMap((m: MapView) => {
+  slamMap.prior = !!m.prior;
+  if (m.prior && m.name) {
+    state.loadedMap = m.name;
+    updateLocButtons();
+  }
   slamMap.pushMap(m);
+  renderMapInfo();
+});
+
+window.usv.onLocalization((s) => renderLoc(s));
+window.usv.onExperiment((s) => renderExperiment(s));
+window.usv.onMode((m) => applyMode(m));
+window.usv.onMapLoaded((r) => {
+  if (!r.ok) {
+    el.locIo.textContent = `地图加载失败：${r.message}`;
+    state.slamMode = 'mapping';
+    slamMap.prior = false;
+    updateLocButtons();
+    return;
+  }
+  if (r.name) state.loadedMap = r.name;
+  el.locIo.textContent = `已加载地图 ${r.name ?? ''}`;
+  updateLocButtons();
 });
 
 window.usv.onAlgoHealth((h: AlgoHealthView) => {
   el.algo.textContent = h.running
-    ? `运行中 · 已处理 ${h.scansSent} 圈 · 重启 ${h.restarts} 次`
+    ? `运行中 · 已处理 ${h.scansSent} 圈 · 重启 ${h.restarts} 次` +
+      (h.api != null ? ` · api ${h.api}` : '')
     : `未运行 · 重启 ${h.restarts} 次`;
 });
 
@@ -716,6 +1142,16 @@ function toggleEstop(): void {
 }
 
 window.addEventListener('keydown', (e) => {
+  if (e.code === 'Escape') {
+    if (state.pickMode) {
+      state.pickMode = false;
+      state.pickPos = null;
+      slamMap.clearPick();
+      el.locHint.textContent = '已取消点选。';
+    }
+    if (state.page !== 'live') setPage('live');
+    return;
+  }
   if (e.code === 'Space') {
     e.preventDefault();
     state.estop = !state.estop;
@@ -767,8 +1203,12 @@ function setupOverlayScrollbar(): void {
   sync();
 }
 
-// 清空地图按钮（仅鼠标 / 手柄菜单 A 键）
+// 清空地图按钮（仅鼠标 / 手柄菜单 A 键）；定位模式下改为「重新全局定位」
 function clearMap(): void {
+  if (state.slamMode === 'localization') {
+    void globalSearch();
+    return;
+  }
   slamMap.reset();
   el.pose.textContent = '等待位姿…';
   el.poseStatus.textContent = '—';
@@ -796,6 +1236,7 @@ async function saveSlam(): Promise<void> {
     } else {
       el.slamIo.textContent = r.message;
     }
+    if (state.page === 'library') el.mapIo.textContent = el.slamIo.textContent;
     el.slamIo.className = `mono ${r.ok ? 't-ok' : r.canceled ? 'muted' : 't-bad'}`;
   } finally {
     modalBusy = false;
@@ -803,7 +1244,8 @@ async function saveSlam(): Promise<void> {
   }
 }
 el.saveSlamBtn.addEventListener('click', () => void saveSlam());
-el.saveSlamKey.innerHTML = xboxIcon('view', { size: 24, title: 'View 键：保存 SLAM 数据' });
+// View 键现在用于打开子页面；这里不再显示保存快捷键
+el.saveSlamKey.innerHTML = '';
 
 /* ---------------- 会话日志 ---------------- */
 
@@ -899,6 +1341,15 @@ setupOverlayScrollbar();
 window.usv.getConfig().then((cfg) => {
   el.ships.dataset.algo = String(cfg.algo.enabled);
 });
+
+applyMode({ mode: 'mapping', mapName: null });
+renderLoc(null);
+renderExperiment(null);
+void refreshMaps();
+void window.usv
+  .getSlamMode()
+  .then((m) => applyMode(m))
+  .catch(() => undefined);
 
 // 手柄采样与指令心跳走定时器（最小化/遮挡时也照常跑），渲染才走 rAF
 window.setInterval(() => {

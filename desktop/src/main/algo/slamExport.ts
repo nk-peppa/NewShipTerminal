@@ -296,7 +296,7 @@ function crc32(buf: Buffer): number {
   return (c ^ -1) >>> 0;
 }
 
-interface ZipEntry {
+export interface ZipEntry {
   name: string;
   data: Buffer;
 }
@@ -430,11 +430,16 @@ export interface ArchiveResult {
   files: string[];
 }
 
+export interface SlamFiles {
+  entries: ZipEntry[];
+  files: string[];
+}
+
 /**
- * 把一次运行打包成 ZIP。没有地图也能导出（只含轨迹），
- * 但如果连轨迹都没有就没意义，由调用方先拦掉。
+ * 组装一次 SLAM 运行的文件（不压缩）。地图库直接写目录，ZIP 导出再用 makeZip。
+ * 没有地图也能生成（只含轨迹），由调用方决定是否允许。
  */
-export function buildSlamArchive(rec: SlamRecorder, meta: SlamMeta, at = new Date()): ArchiveResult {
+export function buildSlamFiles(rec: SlamRecorder, meta: SlamMeta, at = new Date()): SlamFiles {
   const snap = rec.snapshot();
   const files: string[] = [];
   const entries: ZipEntry[] = [];
@@ -490,5 +495,14 @@ export function buildSlamArchive(rec: SlamRecorder, meta: SlamMeta, at = new Dat
   };
   entries.push({ name: 'session.json', data: Buffer.from(JSON.stringify(session, null, 2), 'utf8') });
 
+  return { entries, files };
+}
+
+/**
+ * 把一次运行打包成 ZIP。没有地图也能导出（只含轨迹），
+ * 但如果连轨迹都没有就没意义，由调用方先拦掉。
+ */
+export function buildSlamArchive(rec: SlamRecorder, meta: SlamMeta, at = new Date()): ArchiveResult {
+  const { entries, files } = buildSlamFiles(rec, meta, at);
   return { zip: makeZip(entries, at), files };
 }

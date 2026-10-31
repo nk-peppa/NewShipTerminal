@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { app } from 'electron';
 
 export interface AppConfig {
   ship: { host: string | null; port: number };
@@ -10,6 +11,8 @@ export interface AppConfig {
   algo: { enabled: boolean; python: string; script: string };
   ui: { window: boolean };
   log: { enabled: boolean; dir: string | null; keep: number; rawPartMiB: number };
+  /** 地图与实验数据：默认与日志同一父目录 */
+  storage: { mapsDir: string; experimentsDir: string };
 }
 
 function argOf(argv: string[], name: string): string | null {
@@ -25,6 +28,12 @@ export function loadConfig(argv: string[] = process.argv.slice(1)): AppConfig {
 
   const otaPort = Number(argOf(argv, '--ota-port') ?? 0);
   const logKeep = Number(argOf(argv, '--log-keep') ?? 0);
+  const logDir = argOf(argv, '--log-dir');
+  // 地图/实验默认与日志同父目录；日志路径不传时用 Electron 的 userData/logs。
+  // app.getPath('userData') 在 whenReady 之前也可用。
+  const logParent = path.dirname(path.resolve(logDir ?? path.join(app.getPath('userData'), 'logs')));
+  const mapsDir = argOf(argv, '--maps-dir') ?? path.join(logParent, 'maps');
+  const experimentsDir = argOf(argv, '--experiments-dir') ?? path.join(logParent, 'experiments');
 
   return {
     ship: { host, port: port > 0 ? port : 9527 },
@@ -45,10 +54,11 @@ export function loadConfig(argv: string[] = process.argv.slice(1)): AppConfig {
     ui: { window: !argv.includes('--no-window') },
     log: {
       enabled: !argv.includes('--no-log'),
-      dir: argOf(argv, '--log-dir'),
+      dir: logDir,
       // 实船一次实验 ≤10 分钟、单次约 15MB，留 20 次 ≈ 300MB
       keep: logKeep > 0 ? Math.floor(logKeep) : 20,
       rawPartMiB: 128,
     },
+    storage: { mapsDir, experimentsDir },
   };
 }

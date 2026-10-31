@@ -100,6 +100,25 @@ export interface PoseView {
   scans?: number;
   skipped?: number;
   covariance?: number[];
+  /** 定位模式下为 'localization'，建图模式缺省 */
+  mode?: 'mapping' | 'localization';
+  /** 定位相位：waiting / searching / tracking / lost / ambiguous */
+  phase?: string;
+  /** 人类可读的定位消息 */
+  message?: string;
+  statusText?: string;
+  /** 落在已知栅格内的点比例 */
+  coverage?: number;
+  /** inlier × sqrt(coverage) */
+  confidence?: number;
+  /** 参与匹配的点数 */
+  matched?: number;
+  /** 单帧耗时（ms） */
+  dtMs?: number;
+  /** 全局候选数 / 最佳与次佳的相对优势 */
+  candidates?: number;
+  margin?: number | null;
+  condition?: number | null;
 }
 
 /** SLAM 占据栅格的一次快照（PNG base64，灰度：白=空闲 灰=未知 黑=占据） */
@@ -117,6 +136,10 @@ export interface MapView {
   observed: number;
   /** 清空指令回执：png 为空，界面应丢弃旧图 */
   cleared?: boolean;
+  /** 先验地图（定位模式） */
+  prior?: boolean;
+  name?: string;
+  occupied?: number;
 }
 
 export interface AlgoHealthView {
@@ -124,6 +147,9 @@ export interface AlgoHealthView {
   restarts: number;
   lastPoseAgoMs: number | null;
   scansSent: number;
+  mode?: 'mapping' | 'localization';
+  mapLoaded?: boolean;
+  api?: number | null;
 }
 
 export interface ConfigView {
@@ -148,6 +174,90 @@ export interface LogSaveView {
   canceled?: boolean;
   message: string;
   bytes?: number;
+}
+
+/* ---------------- 地图库 / 定位 / 实验 ---------------- */
+
+export interface MapEntryView {
+  name: string;
+  createdAt: number;
+  size: number;
+  resolution: number;
+  origin: [number, number];
+  observed: number;
+  occupied: number | null;
+  poses: number;
+  bytes: number;
+  hash: string | null;
+  warning: string | null;
+}
+
+export interface MapSaveView {
+  ok: boolean;
+  canceled?: boolean;
+  name?: string;
+  message: string;
+  bytes?: number;
+}
+
+export interface MapLoadView {
+  ok: boolean;
+  name?: string;
+  message: string;
+}
+
+export interface LocalizationCandidateView {
+  x: number;
+  y: number;
+  yaw: number;
+  inlier: number;
+  score: number;
+  matched?: number;
+  coverage?: number;
+}
+
+export interface LocalizationMetricsView {
+  rmse: number | null;
+  inlier: number;
+  coverage: number;
+  matched: number;
+  points: number;
+  confidence: number;
+  dtMs: number;
+  candidates: number;
+  margin: number | null;
+  condition?: number | null;
+}
+
+export interface LocalizationStateView {
+  phase: string;
+  message: string;
+  map: string | null;
+  frames: number;
+  trackingFrames: number;
+  candidates: LocalizationCandidateView[];
+  metrics: LocalizationMetricsView;
+}
+
+export interface ExperimentStatusView {
+  active: boolean;
+  dir: string | null;
+  startedAt: number | null;
+  durationMs: number;
+  frames: number;
+  tracking: number;
+  lost: number;
+  ambiguous: number;
+  scans: number;
+  scansDropped: number;
+  bytes: number;
+  map: string | null;
+  error: string | null;
+}
+
+export interface SlamModeView {
+  mode: 'mapping' | 'localization';
+  mapName: string | null;
 }
 
 /** 本次运行日志的实时状态 */
@@ -190,6 +300,24 @@ export interface UsvApi {
   clearMap(): void;
   /** 弹出保存对话框，把 SLAM 地图与轨迹导出成 ZIP */
   saveSlam(): Promise<SlamSaveView>;
+  /* ---- 地图库 ---- */
+  listMaps(): Promise<MapEntryView[]>;
+  /** 把当前建图结果存进地图库；name 为空时用时间戳 */
+  saveMap(name?: string): Promise<MapSaveView>;
+  deleteMap(name: string): Promise<MapLoadView>;
+  openMapsDir(): Promise<{ ok: boolean; message: string }>;
+  /* ---- 定位 ---- */
+  /** 加载地图并进入定位模式（自动全局定位） */
+  startLocalization(name: string): Promise<MapLoadView>;
+  stopLocalization(): Promise<MapLoadView>;
+  setInitialPose(x: number, y: number, yaw: number): Promise<MapLoadView>;
+  clearPose(): Promise<MapLoadView>;
+  getLocalization(): Promise<LocalizationStateView | null>;
+  getSlamMode(): Promise<SlamModeView>;
+  /* ---- 实验 ---- */
+  getExperiment(): Promise<ExperimentStatusView>;
+  openExperimentDir(): Promise<{ ok: boolean; message: string }>;
+  finalizeExperiment(): Promise<{ ok: boolean; message: string }>;
   /** 本次会话的日志状态（--no-log 时 enabled=false） */
   getLogStatus(): Promise<LogStatusView>;
   /** 在资源管理器里打开本次会话的日志目录 */
@@ -206,4 +334,8 @@ export interface UsvApi {
   onPose(cb: (p: PoseView) => void): () => void;
   onMap(cb: (m: MapView) => void): () => void;
   onAlgoHealth(cb: (h: AlgoHealthView) => void): () => void;
+  onLocalization(cb: (s: LocalizationStateView) => void): () => void;
+  onMapLoaded(cb: (m: MapLoadView & { name?: string }) => void): () => void;
+  onExperiment(cb: (s: ExperimentStatusView) => void): () => void;
+  onMode(cb: (m: SlamModeView) => void): () => void;
 }

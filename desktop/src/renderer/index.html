@@ -73,14 +73,78 @@
             </div>
             <p class="hint">
               左摇杆 油门·舵角 · 右摇杆 地图平移 · R3 回跟随<br />
-              LB/RB 旋转 · LT/RT 缩放 · View 存图
+              LB/RB 旋转 · LT/RT 缩放 · View 地图库
             </p>
           </section>
         </div>
 
         <section class="panel slam-panel">
-          <div id="map-wrap" class="canvas-wrap"><canvas id="map"></canvas></div>
-          <div id="map-info" class="mono info-line">等待 SLAM 地图…</div>
+          <div class="slam-tabs" role="tablist">
+            <button id="tab-live" class="tab on" data-page="live">实时地图</button>
+            <button id="tab-library" class="tab" data-page="library">地图库</button>
+            <button id="tab-localize" class="tab" data-page="localize">定位</button>
+            <button id="tab-experiment" class="tab" data-page="experiment">实验</button>
+            <span id="page-hint" class="page-hint muted">View 打开 · B/Esc 返回</span>
+          </div>
+
+          <div id="page-live" class="slam-page on">
+            <div id="map-wrap" class="canvas-wrap"><canvas id="map"></canvas></div>
+            <div id="map-info" class="mono info-line">等待 SLAM 地图…</div>
+          </div>
+
+          <div id="page-library" class="slam-page">
+            <div class="toolbar">
+              <input id="map-name" class="text-input" maxlength="48" placeholder="地图名（留空=时间戳）" />
+              <button id="map-save-btn" class="btn sm">保存当前地图</button>
+              <button id="map-export-btn" class="btn sm" title="导出成 ZIP（发给别人）">导出 ZIP</button>
+              <button id="map-refresh-btn" class="btn sm">刷新</button>
+              <button id="map-open-dir-btn" class="btn sm">打开目录</button>
+            </div>
+            <div id="map-list" class="map-list mono"><div class="muted">加载中…</div></div>
+            <div id="map-io" class="mono info-line"></div>
+          </div>
+
+          <div id="page-localize" class="slam-page">
+            <div class="loc-head">
+              <span id="loc-map" class="mono">未加载地图</span>
+              <span id="loc-phase" class="loc-phase idle">—</span>
+            </div>
+            <div id="loc-message" class="mono muted">在地图库选择一张地图，然后点「开始定位」。</div>
+            <div class="toolbar">
+              <button id="loc-start-btn" class="btn sm">开始定位</button>
+              <button id="loc-stop-btn" class="btn sm">停止定位</button>
+              <button id="loc-global-btn" class="btn sm">重新全局定位</button>
+              <button id="loc-pick-btn" class="btn sm">点选初始位姿</button>
+              <button id="loc-origin-btn" class="btn sm" title="地图原点 (0,0,0) = 建图起点">用地图原点</button>
+            </div>
+            <dl class="mono metrics">
+              <dt>位姿</dt><dd id="loc-pose">—</dd>
+              <dt>残差 / 内点</dt><dd id="loc-quality">—</dd>
+              <dt>置信度 / 匹配点</dt><dd id="loc-confidence">—</dd>
+              <dt>单帧耗时 / 候选</dt><dd id="loc-timing">—</dd>
+            </dl>
+            <div id="loc-hint" class="mono muted">自动全局定位：首帧在整张地图搜索，多帧投票；不确定时请点选初始位姿。开始定位会结束当前建图会话，需保留请先在地图库保存。</div>
+            <div id="loc-io" class="mono info-line"></div>
+          </div>
+
+          <div id="page-experiment" class="slam-page">
+            <dl class="mono metrics">
+              <dt>目录</dt><dd id="exp-dir">—</dd>
+              <dt>时长 / 帧数</dt><dd id="exp-duration">—</dd>
+              <dt>跟踪 / 丢失 / 歧义</dt><dd id="exp-phases">—</dd>
+              <dt>扫描 / 丢弃</dt><dd id="exp-scans">—</dd>
+              <dt>大小 / 地图</dt><dd id="exp-size">—</dd>
+            </dl>
+            <div class="toolbar">
+              <button id="exp-open-btn" class="btn sm">打开目录</button>
+              <button id="exp-finalize-btn" class="btn sm">结束并归档</button>
+            </div>
+            <div id="exp-io" class="mono info-line"></div>
+            <div id="exp-hint" class="mono muted">
+              定位开始时自动落盘：localization.csv、scans.jsonl（原始扫描）、events.jsonl、
+              summary.json 与地图副本。
+            </div>
+          </div>
         </section>
 
         <section class="panel telemetry" id="telemetry">
@@ -104,19 +168,24 @@
             </dl>
 
           <h2>SLAM</h2>
+          <div id="slam-mode" class="mono muted">模式：—</div>
           <div id="pose" class="mono">等待位姿…</div>
           <div id="pose-status" class="mono muted">—</div>
           <div id="algo" class="mono muted">算法进程：—</div>
           <div class="slam-actions">
+            <button id="open-maps-btn" class="btn sm" title="打开地图库 / 定位 / 实验（手柄 View 键）">
+              <span class="btn-label">地图与定位</span>
+              <span id="open-maps-key" class="btn-key"></span>
+            </button>
             <button
               id="save-slam-btn"
               class="btn sm"
-              title="把 SLAM 地图与轨迹导出成 ZIP（手柄 View 键）"
+              title="把当前建图结果导出成 ZIP"
             >
-              <span class="btn-label">保存数据</span>
+              <span class="btn-label">导出 ZIP</span>
               <span id="save-slam-key" class="btn-key"></span>
             </button>
-            <button id="clear-map-btn" class="btn sm" title="清空 SLAM 地图（菜单 → A）">
+            <button id="clear-map-btn" class="btn sm" title="清空 SLAM 地图（菜单 → A）；定位时改为重新全局定位">
               <span class="btn-label">清空地图</span>
             </button>
           </div>
