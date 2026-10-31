@@ -86,3 +86,37 @@ python -m pytest tests -q
 ```
 
 运行测试需要 `pytest`；运行算法本身只依赖 `numpy`、`scipy`（见 `requirements.txt`）。
+
+## 算法负责人更新：v4 修订版（2026-10-31）
+
+按算法负责人请求，在 `e15d1c684f5615078c70972ee00c09c0c1527d02` 之后导入新版，
+保留终端的 `tests/conftest.py`、侧车、通信、UI 和船控代码。更新源为
+`Lidar-SLAM-v4-Source.zip`（15 个文件，38,101 字节）；ZIP SHA256：
+`efb8b9bd690aec69c263e2a35a5247b9acde42cbeec118f737d95ad538df47c9`。
+
+这是算法所有者交付升级，不是终端侧绕过 vendor 边界手改算法。当前内容以本节为准，
+上面的 v2 SHA256 表仅记录首次导入。各文件与交付包逐一核对；下表按 UTF-8 / LF
+计算 SHA256，避免 Windows checkout 的 CRLF 差异。
+
+| 文件 | SHA256（LF） |
+|---|---|
+| `CHANGES_CN.md` | `6bce41d9622508dca3ca229fe65405745fff1642611ba5cb6ca36de98bab32bc` |
+| `README_CN.md` | `2003067ea259061265ae8b731c4a36f72aaeb32b5dd1c7af42690f542c7ba01b` |
+| `cocommand2d/__init__.py` | `f462d82189c4388143d9e6e6d453a68d7b1e56d0de0b2f1efbecbd034f159924` |
+| `cocommand2d/batch_slam.py` | `72a574cd61e85bbc66977ca3e9ce375985dc154142957f5d5516c60728d396d0` |
+| `cocommand2d/recording/__init__.py` | `5ffb5cec7aeea1cf110a4efaa2a900aee95bd0ce793d3f92029a04d1f36591bb` |
+| `cocommand2d/recording/io.py` | `b0450145c0fe23b46f78f4524ea97ee929423c2abe1a40c8bb83d10d44056cf2` |
+| `cocommand2d/scan.py` | `86d5c5eabda7985a66e67aee2d328d1a79a9347fe82c0e093a78cc2f399f3cd6` |
+| `cocommand2d/slam/__init__.py` | `5386c2168a75b3ce2dba720daa382082494c0c90aead62b517a065bdf1969d36` |
+| `cocommand2d/slam/core.py` | `0e13f0b11275d50060dc1d1ceb1e23639f47c1c67062b2bec4b16f34bb358157` |
+| `cocommand2d/slam/grid.py` | `17789dbbfab08945b57fafd7fc40f0e801517171a4e36830aa3cd8b87af22b86` |
+| `cocommand2d/slam/preprocessing.py` | `ed7d7ff2126dfaa0b84009b6c167f90a52cc14b81b48ae3ad26814686ce712cd` |
+| `requirements.txt` | `bbe7e0d48fd759d782cbcda080791a5af33842b74f2c08ad9730a700a9646fcd` |
+| `run_slam.py` | `79312be3c5206ebb1cace250214b0870c1b7098520647686845aceb15b8f17f0` |
+| `tests/test_preprocessing.py` | `4de6eac61413e22964a8c25d1cc3afdfd7937e3a35baaf52358b3ca2ff766e6e` |
+| `tests/test_robust_slam.py` | `e9482f696a96a716fe6ebe8229a6b74b839ced62096ecf5fd8b50f4fef5d2d80` |
+
+新增较长直线定位参考与非直线点的多帧、多视角确认；保留 5 秒恢复和连续 3 帧确认。
+`RECOVERING` 状态及保留位姿语义见 `desktop/docs/slam-integration.md`。
+四项仓库检查：算法 81 项、Node 12 项、实时接入 13 项、导出 24 项全部通过；
+合成测试不等于实船验证。

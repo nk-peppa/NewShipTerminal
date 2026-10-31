@@ -26,6 +26,11 @@ class OccupancyGrid:
         self._updates = 0
         self.clipped = False
 
+    def reset_confirmation(self):
+        """Break temporal hit support after loss; retain all published map evidence."""
+        self.hit_support.fill(0)
+        self.last_hit.fill(0)
+
     @staticmethod
     def _points(value, name):
         value = np.asarray(value, dtype=np.float64)

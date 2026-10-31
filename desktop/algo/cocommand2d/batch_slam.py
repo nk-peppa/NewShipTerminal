@@ -5,7 +5,7 @@ from pathlib import Path
 import time
 
 from .recording import replay, save_result
-from .slam import LidarSlam
+from .slam import LidarSlam, SlamConfig
 
 
 def main(argv=None):
@@ -15,12 +15,27 @@ def main(argv=None):
     parser.add_argument("--output", required=True, help="New directory for map and trajectory")
     parser.add_argument("--extent", type=float, default=40.0, help="Square map width in metres")
     parser.add_argument("--resolution", type=float, default=0.08, help="Grid resolution in metres")
+    parser.add_argument("--recovery-window", type=float, default=5.0,
+                        help="Seconds since last trusted scan allowed to finish recovery")
+    parser.add_argument("--recovery-confirmations", type=int, default=3,
+                        help="Consecutive matching scans needed to resume mapping (at least 2)")
+    parser.add_argument("--water-ring-filter", action=argparse.BooleanOptionalAction, default=True,
+                        help="Straight-edged pool arc filter; disable near real circular structures")
+    parser.add_argument("--pool-noise-filter", action=argparse.BooleanOptionalAction, default=True,
+                        help="Use extended wall anchors and temporal validation of other map points")
     args = parser.parse_args(argv)
 
     destination = Path(args.output)
     if destination.exists():
         parser.error("--output must be a new directory; existing results are never overwritten")
-    slam = LidarSlam(extent=args.extent, resolution=args.resolution)
+    try:
+        config = SlamConfig(max_tracking_gap=args.recovery_window,
+                            recovery_confirmations=args.recovery_confirmations,
+                            water_ring_filter=args.water_ring_filter,
+                            pool_noise_filter=args.pool_noise_filter)
+        slam = LidarSlam(extent=args.extent, resolution=args.resolution, config=config)
+    except ValueError as exc:
+        parser.error(str(exc))
     started = time.perf_counter()
     frames = 0
     try:
@@ -49,6 +64,13 @@ def main(argv=None):
         "quarantined_frames": sum(row.get("quarantined_points", 0) > 0 for row in slam.diagnostics),
         "deskew_frames": sum(row.get("deskew") == "constant_twist" for row in slam.diagnostics),
         "attitude_frames": sum(row.get("tilt") == "projected" for row in slam.diagnostics),
+        "recovery_window_seconds": config.max_tracking_gap,
+        "recoveries": sum(row.get("recovered", False) for row in slam.diagnostics),
+        "recovery_confirmation_frames": sum(row["status"].startswith("RECOVERING") for row in slam.diagnostics),
+        "water_ring_filter": config.water_ring_filter,
+        "pool_noise_filter": config.pool_noise_filter,
+        "temporal_withheld_points": sum(row.get("temporal_withheld", 0) for row in slam.diagnostics),
+        "ring_rejected_points": sum(row.get("ring_rejected", 0) for row in slam.diagnostics),
     }
     (destination / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
     print(json.dumps(summary, ensure_ascii=False))
