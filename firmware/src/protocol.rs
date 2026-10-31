@@ -21,6 +21,7 @@ pub const T_HELLO_ACK: u8 = 0x83;
 pub const T_PONG: u8 = 0x84;
 pub const T_SCAN2: u8 = 0x85;
 pub const T_TIME_SYNC_RESULT: u8 = 0x86;
+pub const T_SYS: u8 = 0x87;
 
 pub const T_OTA_BEGIN: u8 = 0x11;
 pub const T_OTA_DATA: u8 = 0x12;
@@ -49,9 +50,13 @@ pub const CAP_SELFTEST: u32 = 1 << 4;
 /// systemd 层的启动失败回滚看门狗已装（OnFailure + rollback.sh）。
 /// 装好之后坏版本会自己退回上一版，客户端据此决定是否需要二次确认升级。
 pub const CAP_WATCHDOG: u32 = 1 << 5;
+/// 预发布 / 测试构建（Cargo 版本号带 `-test` 后缀）。
+/// 客户端据此在界面上标「测试版」，避免把试验固件误当成量产版本。
+pub const CAP_TEST_BUILD: u32 = 1 << 6;
 
 pub const CMD_LEN: usize = 12;
 pub const STATUS_LEN: usize = 26;
+pub const SYS_LEN: usize = 4;
 pub const HELLO_LEN: usize = 10;
 pub const HELLO_ACK_LEN: usize = 26;
 pub const SCAN2_HDR_LEN: usize = 24;
@@ -178,6 +183,32 @@ impl Status {
             points_last: u16::from_le_bytes([p[20], p[21]]),
             scans_total: u16::from_le_bytes([p[22], p[23]]),
             loop_hz_x10: u16::from_le_bytes([p[24], p[25]]),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SysInfo {
+    /// SoC 温度，0.1 °C；`SYS_TEMP_UNKNOWN` 表示读不到
+    pub temp_c_x10: i16,
+}
+
+/// 温度读不到时的哨兵值（0.1 °C，正常不可能出现）
+pub const SYS_TEMP_UNKNOWN: i16 = i16::MIN;
+
+impl SysInfo {
+    pub fn encode(&self) -> [u8; SYS_LEN] {
+        let mut b = [0u8; SYS_LEN];
+        b[0..2].copy_from_slice(&self.temp_c_x10.to_le_bytes());
+        b
+    }
+
+    pub fn decode(p: &[u8]) -> Option<SysInfo> {
+        if p.len() != SYS_LEN {
+            return None;
+        }
+        Some(SysInfo {
+            temp_c_x10: i16::from_le_bytes([p[0], p[1]]),
         })
     }
 }
@@ -650,6 +681,30 @@ mod tests {
         assert_eq!(st.scans_total, 3);
         assert_eq!(st.loop_hz_x10, 500);
         assert_eq!(st.encode().to_vec(), frames[0].1);
+    }
+
+    #[test]
+    fn sys_frame_roundtrip_and_unknown() {
+        let info = SysInfo { temp_c_x10: 487 };
+        let frame = build_frame(T_SYS, 3, &info.encode());
+        let mut p = FrameParser::new();
+        let frames = p.feed(&frame);
+        assert_eq!(frames.len(), 1);
+        assert_eq!(frames[0].0.kind, T_SYS);
+        assert_eq!(SysInfo::decode(&frames[0].1), Some(info));
+
+        // 读不到温度时用 0x8000 哨兵，客户端应显示「—」而不是 -3276.8 °C
+        let unknown = SysInfo {
+            temp_c_x10: SYS_TEMP_UNKNOWN,
+        };
+        assert_eq!(unknown.encode(), [0x00, 0x80, 0x00, 0x00]);
+        assert_eq!(
+            SysInfo::decode(&unknown.encode()),
+            Some(SysInfo {
+                temp_c_x10: i16::MIN
+            })
+        );
+        assert!(SysInfo::decode(&[0u8; 3]).is_none());
     }
 
     #[test]

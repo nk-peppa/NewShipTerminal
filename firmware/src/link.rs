@@ -139,6 +139,7 @@ fn handle_client(mut stream: TcpStream, shared: Arc<Shared>) {
             let period = Duration::from_millis(20);
             let mut next = Instant::now();
             let t0 = Instant::now();
+            let mut tick: u32 = 0;
             while w_flag.load(Ordering::Relaxed) {
                 let st = Status {
                     time_ms: crate::now_ms(),
@@ -163,6 +164,20 @@ fn handle_client(mut stream: TcpStream, shared: Arc<Shared>) {
                     loop_hz_x10: w_shared.telemetry.loop_hz_x10.load(Ordering::Relaxed),
                 };
                 let mut frame = build_frame(T_STATUS, w_shared.tx_seq.fetch_add(1, Ordering::Relaxed), &st.encode());
+
+                // 系统遥测 1Hz（温度变化慢）：搭在 STATUS 后面一起写，不额外唤醒
+                if tick % 50 == 0 {
+                    let info = SysInfo {
+                        temp_c_x10: crate::thermal::soc_temp_c_x10()
+                            .unwrap_or(SYS_TEMP_UNKNOWN),
+                    };
+                    frame.extend_from_slice(&build_frame(
+                        T_SYS,
+                        w_shared.tx_seq.fetch_add(1, Ordering::Relaxed),
+                        &info.encode(),
+                    ));
+                }
+                tick = tick.wrapping_add(1);
 
                 // 每拍最多带一圈点云，避免突发
                 let scan = {
@@ -238,6 +253,7 @@ fn handle_client(mut stream: TcpStream, shared: Arc<Shared>) {
                                     caps: CAP_SCAN2
                                         | CAP_OTA
                                         | CAP_SELFTEST
+                                        | if is_test_build() { CAP_TEST_BUILD } else { 0 }
                                         | if shared.watchdog_armed.load(Ordering::Relaxed) {
                                             CAP_WATCHDOG
                                         } else {
@@ -322,6 +338,12 @@ pub fn fw_version() -> (u16, u16, u16) {
         env!("CARGO_PKG_VERSION_MINOR").parse().unwrap_or(0),
         env!("CARGO_PKG_VERSION_PATCH").parse().unwrap_or(0),
     )
+}
+
+/// Cargo 版本号带预发布后缀（如 `0.4.1-test.1`）即视为测试构建。
+/// 只影响上报的能力位与界面标识，不改变任何控制行为；正式发布去掉后缀即自动失效。
+pub fn is_test_build() -> bool {
+    env!("CARGO_PKG_VERSION").contains('-')
 }
 
 pub fn hw_id() -> [u8; 8] {

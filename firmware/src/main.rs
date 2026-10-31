@@ -15,6 +15,7 @@ mod link;
 mod ntp;
 mod ota;
 mod protocol;
+mod thermal;
 
 use config::Config;
 use hal::Hal;
@@ -187,10 +188,11 @@ fn main() {
 
     let (maj, min, pat) = link::fw_version();
     println!(
-        "[main] usv-edge {}.{}.{} · {}Hz · watchdog {}ms · max_throttle {}% · dry_run={}",
+        "[main] usv-edge {}.{}.{}{} · {}Hz · watchdog {}ms · max_throttle {}% · dry_run={}",
         maj,
         min,
         pat,
+        if link::is_test_build() { " (TEST BUILD)" } else { "" },
         cfg.control.freq_hz,
         cfg.control.watchdog_ms,
         cfg.control.max_throttle_pct,

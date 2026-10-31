@@ -10,8 +10,11 @@ import {
   T_CMD,
   T_SCAN,
   T_STATUS,
+  T_SYS,
+  SYS_TEMP_UNKNOWN,
   unpackScan,
   unpackStatus,
+  unpackSys,
 } from '../src/shared/protocol.js';
 
 const hex = (s: string) => Buffer.from(s.replace(/\s+/g, ''), 'hex');
@@ -46,6 +49,22 @@ test('STATUS 黄金帧解码', () => {
   assert.equal(st.pointsLast, 480);
   assert.equal(st.scansTotal, 3);
   assert.equal(st.loopHzX10, 500);
+});
+
+test('SYS 黄金帧解码（MCU 温度 48.5 °C）', () => {
+  const payload = Buffer.alloc(4);
+  payload.writeInt16LE(485, 0);
+  const parsed = new FrameParser().feed(buildFrame(T_SYS, 9, payload));
+  assert.equal(parsed.length, 1);
+  assert.equal(parsed[0]?.type, T_SYS);
+  assert.deepEqual(unpackSys(parsed[0]!.payload), { tempC: 48.5 });
+});
+
+test('SYS 哨兵值表示船端读不到温度', () => {
+  const payload = Buffer.alloc(4);
+  payload.writeInt16LE(SYS_TEMP_UNKNOWN, 0);
+  assert.deepEqual(unpackSys(payload), { tempC: null });
+  assert.throws(() => unpackSys(Buffer.alloc(2)), /SYS 长度错误/);
 });
 
 test('SCAN 黄金帧解码（未压缩，3 点）', () => {

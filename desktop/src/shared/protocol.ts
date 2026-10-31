@@ -22,6 +22,7 @@ export const T_HELLO_ACK = 0x83;
 export const T_PONG = 0x84;
 export const T_SCAN2 = 0x85;
 export const T_TIME_SYNC_RESULT = 0x86;
+export const T_SYS = 0x87;
 
 export const T_OTA_BEGIN = 0x11;
 export const T_OTA_DATA = 0x12;
@@ -36,6 +37,8 @@ export const CAP_OTA = 1 << 1;
 export const CAP_SELFTEST = 1 << 4;
 /** 船端 systemd 启动失败回滚看门狗已装（OnFailure + rollback.sh） */
 export const CAP_WATCHDOG = 1 << 5;
+/** 船端是预发布/测试构建（版本号带 `-test` 后缀），界面应标「测试版」 */
+export const CAP_TEST_BUILD = 1 << 6;
 
 export const CMD_FLAG_ARM = 0x01;
 export const CMD_FLAG_ESTOP = 0x02;
@@ -52,6 +55,10 @@ export const MAX_PAYLOAD = 8192;
 
 export const CMD_LEN = 12;
 export const STATUS_LEN = 26;
+/** SYS：i16 温度(0.1°C) + u16 保留 */
+export const SYS_LEN = 4;
+/** 温度读不到时的哨兵值（0.1°C 单位，不可能出现的温度） */
+export const SYS_TEMP_UNKNOWN = -32768;
 
 export function crc16(data: Buffer, crc = 0xffff): number {
   let c = crc;
@@ -135,6 +142,21 @@ export function unpackStatus(payload: Buffer): Status {
     scansTotal: payload.readUInt16LE(22),
     loopHzX10: payload.readUInt16LE(24),
   };
+}
+
+/* ---------------- SYS（设备系统遥测，1Hz） ---------------- */
+
+export interface SysStatus {
+  /** SoC（MCU）温度 °C；船端读不到 sysfs 时为 null */
+  tempC: number | null;
+}
+
+export function unpackSys(payload: Buffer): SysStatus {
+  if (payload.length !== SYS_LEN) {
+    throw new Error(`SYS 长度错误: ${payload.length}`);
+  }
+  const x10 = payload.readInt16LE(0);
+  return { tempC: x10 === SYS_TEMP_UNKNOWN ? null : x10 / 10 };
 }
 
 /* ---------------- SCAN（领域对象 Scan2D） ---------------- */

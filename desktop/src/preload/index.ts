@@ -13,6 +13,7 @@ import type {
   ShipView,
   SlamSaveView,
   StatusView,
+  SysView,
   UsvApi,
 } from '../shared/api.js';
 
@@ -40,6 +41,7 @@ const api: UsvApi = {
     ipcRenderer.invoke('fw:update', file) as Promise<{ ok: boolean; message: string }>,
   onFirmware: (cb) => subscribe<FirmwareStateView>('evt:fw', cb),
   onStatus: (cb) => subscribe<StatusView>('evt:status', cb),
+  onSys: (cb) => subscribe<SysView>('evt:sys', cb),
   onScan: (cb) => subscribe<ScanView>('evt:scan', cb),
   onLink: (cb) => subscribe<LinkStateView>('evt:link', cb),
   onShips: (cb) => subscribe<ShipView[]>('evt:ships', cb),

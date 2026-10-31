@@ -35,6 +35,14 @@ export interface ScanView {
   rateHz?: number;
 }
 
+/** 船端系统遥测（SYS 帧，1Hz） */
+export interface SysView {
+  /** 本机接收时刻（epoch ms） */
+  t: number;
+  /** 船端 SoC（MCU）温度 °C；固件读不到时为 null */
+  mcuTempC: number | null;
+}
+
 export interface LinkStateView {
   connected: boolean;
   host: string;
@@ -49,6 +57,8 @@ export interface LinkStateView {
   caps: number;
   /** 船端 systemd 回滚看门狗是否已装（caps 的 CAP_WATCHDOG 位）；未握手为 false */
   watchdogArmed: boolean;
+  /** 船端是否为测试构建（caps 的 CAP_TEST_BUILD 位） */
+  testBuild: boolean;
   /** 上下行延迟（ms）；对称假设下的分解，未握手或旧固件为 null */
   upMs: number | null;
   downMs: number | null;
@@ -200,6 +210,7 @@ export interface UsvApi {
   updateFirmware(file: string): Promise<{ ok: boolean; message: string }>;
   onFirmware(cb: (s: FirmwareStateView) => void): () => void;
   onStatus(cb: (s: StatusView) => void): () => void;
+  onSys(cb: (s: SysView) => void): () => void;
   onScan(cb: (s: ScanView) => void): () => void;
   onLink(cb: (s: LinkStateView) => void): () => void;
   onShips(cb: (s: ShipView[]) => void): () => void;

@@ -117,8 +117,9 @@ CRC16-CCITT-FALSE，覆盖 ver..payload，小端
 | 0x84 | PONG | 设备 → 客户端 | 应答 PING | `u64 t1_ms, u32 t2_ms, u32 t3_ms`（t2/t3 为船端单调时钟）(16B) |
 | 0x85 | SCAN2 | 设备 → 客户端 | ~10Hz | 见下（仅当客户端声明支持时发送，否则发 0x82） |
 | 0x86 | TIME_SYNC_RESULT | 设备 → 客户端 | 应答 TIME_SYNC | `u8 status, u8 rsv, i32 offset_sec, u16 rtt_ms` (8B) |
+| 0x87 | SYS | 设备 → 客户端 | 1Hz | `i16 temp_c_x10, u16 rsv` (4B)：SoC 温度（0.1 °C），`0x8000` = 读不到 |
 
-`caps` 位：bit0 `SCAN2`、bit1 `OTA`、bit2 `IMU`、bit3 `VIDEO`、bit4 `SELFTEST`、bit5 `WATCHDOG`（启动失败回滚看门狗已装，见 §5.4）。
+`caps` 位：bit0 `SCAN2`、bit1 `OTA`、bit2 `IMU`、bit3 `VIDEO`、bit4 `SELFTEST`、bit5 `WATCHDOG`（启动失败回滚看门狗已装，见 §5.4）、bit6 `TEST_BUILD`（版本号带 `-test` 后缀的预发布构建，客户端界面标「测试版」）。
 
 ### 4.2.1 时钟同步（NTP 四时间戳法）
 
@@ -138,6 +139,27 @@ offset = ((T2−T1) + (T3−T4)) / 2     船钟 − 本地钟
 
 STATUS 的 `flags` bit5 `ST_TIME_BAD`：船端系统时间曾与 NTP 相差 ≥ `bad_threshold_s`（默认 3600）。
 置位后由客户端提示校时；用户主动发 TIME_SYNC 且成功即清除。
+
+### 4.2.2 系统遥测（SYS 0x87）与温度告警
+
+设备每秒随 STATUS 追加一帧 SYS：
+
+```
+i16 temp_c_x10   SoC 温度，0.1 °C；0x8000 = sysfs 读不到
+u16 rsv          0（预留给负载/电压）
+```
+
+取 `/sys/class/thermal/thermal_zone*/temp` 中 cpu/ddr/gpu/ve 四个 zone 的最高值。
+SYS 是独立帧类型：v1 客户端按「未知类型忽略」，不影响 50Hz 的 STATUS 解码。
+
+终端配色阈值**取自本机内核 DTS 的 thermal trip point**，实机可复核
+`/sys/class/thermal/thermal_zone0/trip_point_*_temp`（Orange Pi Zero2W / H618）：
+
+| 温度 | 界面 | 依据 |
+|---|---|---|
+| < 70 °C | 正常（灰白） | 低于第一个 passive 点；固件设计目标 ≤ 62 °C（§1） |
+| 70–89 °C | 黄 + 「偏高」 | `trip_point_0 = 70000`（passive）：内核开始降频，50Hz 控制节拍可能失守 |
+| ≥ 90 °C | 红 + 「过热」 | `trip_point_1 = 90000`（passive，二次降频）；`trip_point_2 = 115000`（critical）会直接关机 |
 
 ### 4.2 SCAN2 头（24B）
 
@@ -317,6 +339,33 @@ sh scripts/install-usv-edge.sh --units-only
 - 未握手 → 显示「—」，按未装处理（保守）。
 
 不做硬拒绝：万一保险真的丢了而现场又必须推一个修复包，硬拒会连修的机会都没有。
+
+### 5.5 测试版构建与回滚
+
+试验性的包必须一眼能认出来，避免和量产版本混在一起：
+
+| 标记 | 位置 | 例子 |
+|---|---|---|
+| Cargo 版本带 `-test.N` | `Cargo.toml` / 包名 / `manifest.json` | `usv-edge-0.4.1-test.1-aarch64.tar.gz` |
+| `--version` 与启动横幅 | journal：`[main] usv-edge 0.4.1 (TEST BUILD)` | 版本号本身带后缀 |
+| `caps` bit6 `CAP_TEST_BUILD` | `HELLO_ACK`；终端固件行显示黄色「（测试版）」 | `caps=0x73` |
+
+版本号去掉 `-test` 后缀后，`CAP_TEST_BUILD` 自动消失（由 `CARGO_PKG_VERSION` 推导，不需要改代码）。
+**设备上的目录仍用三段数字版本**（`releases/0.4.1`），OTA 客户端也只从文件名解析三段版本。
+
+回滚到上一版有三条路，`prev` 记录在 `/opt/usv/rollback.json`：
+
+1. **自动（推荐验证）**：OTA 切换后 30s 内没有客户端 `HELLO`，新固件自己切回 `prev` 并退出，
+   `systemd` 拉起旧版本 —— journal 里是 `[ota] 新版本未收到 HELLO，回滚到 0.4.0`。
+2. **启动失败**：`StartLimitBurst` 触发 `usv-edge-rollback.service` → `/opt/usv/bin/rollback.sh`（§5.4）。
+3. **手动**：`sh /opt/usv/bin/rollback.sh`（标记存在时），或直接
+   `ln -sfn releases/0.4.0 /opt/usv/.current.tmp && mv -Tf /opt/usv/.current.tmp /opt/usv/current && systemctl restart usv-edge`。
+
+回滚后确认：`readlink /opt/usv/current` 指回旧版本、`/opt/usv/current/usv-edge --version` 正确、
+`rollback.json` 已删除、服务 `active`。旧版本目录不会被 OTA 删除，可反复回滚。
+
+> 2026-10-31 实测：0.4.0 → OTA `0.4.1-test.1` → 不握手 30s 自动回滚 0.4.0 → 再次 OTA 并握手，
+> 停在新版本且标记清除；`releases/0.4.0` 始终保留。
 
 ## 6. 配置
 

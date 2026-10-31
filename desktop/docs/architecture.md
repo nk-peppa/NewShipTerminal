@@ -57,6 +57,7 @@
 AA 55 | ver=1 | type | seq(u16) | len(u16) | payload | crc16
 CRC16-CCITT-FALSE，覆盖 ver..payload，小端
 CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~10Hz, 可 zlib)
+SYS 0x87 (4B, 1Hz)：船端 SoC 温度（v2 新增，v1 客户端忽略未知类型）
 ```
 
 权威字段表：`spec/protocol-v1.md`；黄金帧测试：`desktop/test/protocol.test.ts`。
@@ -82,6 +83,7 @@ CMD 0x01 (12B, 50Hz) · STATUS 0x81 (26B, 50Hz) · SCAN 0x82 (8B 头 + 5B/点, ~
 | `ui:cmd` | 渲染 → 主 | ~31Hz | `{throttle, rudder}` 归一化 −1..1；**定时器驱动**（`setInterval` + `backgroundThrottling:false`），窗口最小化时也不断流 |
 | `ui:arm` / `ui:estop` | 渲染 → 主 | 事件 | 布尔 |
 | `evt:status` | 主 → 渲染 | 20Hz | `StatusView` |
+| `evt:sys` | 主 → 渲染 | 1Hz | `SysView`：船端 MCU/SoC 温度（`mcuTempC`，读不到为 null） |
 | `evt:scan` | 主 → 渲染 | ~10Hz | `ScanView`（TypedArray） |
 | `evt:link` / `evt:ships` | 主 → 渲染 | 1Hz / 变更 | 链路与在场船只 |
 | `evt:pose` / `evt:algo` | 主 → 渲染 | 10Hz / 1Hz | SLAM 位姿与算法健康 |
@@ -168,7 +170,8 @@ desktop/
 | 能力位 `caps` | 雷达启停、SCAN v2、OTA、IMU、视频流等，终端按位降级 |
 | `SCAN` 头扩展 | `t_start_ms / scan_seq(u32) / original_count / scan_rate_x100 / quality_max` |
 | `OTA_BEGIN/PROGRESS/RESULT`（独立端口 9530） | 传输与校验不占用 50Hz 控制链路 |
-| `STATUS` 扩展（可选） | 固件版本、CPU/温度、升级状态、电池电压 |
+| `SYS` 0x87（已实现） | 1Hz 系统遥测：SoC 温度（`i16 temp_c_x10`）；`rsv` 留给负载/电压，不挤占 50Hz 的 STATUS |
+| `CAP_TEST_BUILD`（caps bit6） | 预发布构建标记：Cargo 版本带 `-test` 后缀时置位，终端显示「测试版」 |
 
 ### 7.4 升级期间的安全约定
 

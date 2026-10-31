@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 
 import {
   buildFrame,
+  CAP_TEST_BUILD,
   CAP_WATCHDOG,
   computeRtt,
   FrameParser,
@@ -17,6 +18,7 @@ import {
   T_SCAN,
   T_SCAN2,
   T_STATUS,
+  T_SYS,
   T_TIME_SYNC,
   T_TIME_SYNC_RESULT,
   unpackHelloAck,
@@ -24,11 +26,13 @@ import {
   unpackScan,
   unpackScan2,
   unpackStatus,
+  unpackSys,
   unpackTimeSyncResult,
   type HelloAck,
   type RttSample,
   type ScanFrame,
   type Status,
+  type SysStatus,
 } from '../../shared/protocol.js';
 import type { OutCommand } from '../safety/supervisor.js';
 
@@ -56,6 +60,8 @@ export interface LinkState {
   caps: number;
   /** 船端 systemd 回滚看门狗是否已装（caps 的 CAP_WATCHDOG 位） */
   watchdogArmed: boolean;
+  /** 船端是否为测试构建（caps 的 CAP_TEST_BUILD 位） */
+  testBuild: boolean;
   /** 上下行延迟（ms）；未握手或旧固件为 null */
   upMs: number | null;
   downMs: number | null;
@@ -265,6 +271,7 @@ export class TcpLink extends EventEmitter {
       fwVersion: this.hello ? this.hello.fw.join('.') : null,
       caps: this.hello?.caps ?? 0,
       watchdogArmed: (((this.hello?.caps ?? 0) & CAP_WATCHDOG) !== 0),
+      testBuild: (((this.hello?.caps ?? 0) & CAP_TEST_BUILD) !== 0),
       upMs: this.rtt ? Math.round(this.rtt.upMs * 10) / 10 : null,
       downMs: this.rtt ? Math.round(this.rtt.downMs * 10) / 10 : null,
       rttMs: this.rtt ? Math.round(this.rtt.delayMs * 10) / 10 : null,
@@ -340,6 +347,13 @@ export class TcpLink extends EventEmitter {
           this.scanCount++;
           const received: ReceivedScan = { scan, recvMs: Date.now() };
           this.emit('scan', received);
+        } catch (err) {
+          this.reportDecodeError(err);
+        }
+      } else if (frame.type === T_SYS) {
+        try {
+          const sys: SysStatus = unpackSys(frame.payload);
+          this.emit('sys', sys);
         } catch (err) {
           this.reportDecodeError(err);
         }

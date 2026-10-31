@@ -48,6 +48,7 @@ const {
   T_PONG,
   T_STATUS,
   T_SCAN2,
+  T_SYS,
   CAP_SCAN2,
 } = require('../dist/shared/protocol.js');
 
@@ -371,6 +372,20 @@ function startSim(opts = {}) {
     }
   }, 20);
 
+  /* --- SYS 1Hz：模拟 SoC 温度，USV_SIM_TEMP=<°C> 可验证黄/红告警 --- */
+  const rawSimTemp = Number(process.env.USV_SIM_TEMP ?? 48);
+  const simTempC = Number.isFinite(rawSimTemp) ? Math.min(120, Math.max(-20, rawSimTemp)) : 48;
+  const sysTimer = setInterval(() => {
+    try {
+      if (!client || client.destroyed) return;
+      const buf = Buffer.alloc(4);
+      buf.writeInt16LE(Math.round((simTempC + (Math.random() - 0.5) * 0.6) * 10), 0);
+      client.write(buildFrame(T_SYS, 0, buf));
+    } catch (err) {
+      logLine(`[sim] sys 发送异常 ${err.message}`);
+    }
+  }, 1000);
+
   /* --- SCAN2 10Hz --- */
   let lastScanEnd = monoMs();
   const scanTimer = setInterval(() => {
@@ -456,6 +471,7 @@ function startSim(opts = {}) {
   function stop() {
     clearInterval(physTimer);
     clearInterval(statusTimer);
+    clearInterval(sysTimer);
     clearInterval(scanTimer);
     if (udpTimer) clearInterval(udpTimer);
     client?.destroy();

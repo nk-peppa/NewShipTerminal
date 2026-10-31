@@ -6,6 +6,7 @@ import type {
   StatusView,
   UsvApi,
 } from '../shared/api.js';
+import { formatMcuTemp } from '../shared/temperature.js';
 import { RadarView } from './radar.js';
 import { PadMenu } from './padMenu.js';
 import { xboxIcon } from './icons/xbox.js';
@@ -34,6 +35,7 @@ const el = {
   thrBar: $('thr-bar'),
   rudBar: $('rud-bar'),
   stHz: $('st-hz'),
+  stMcuTemp: $('st-mcu-temp'),
   stUp: $('st-up'),
   stDown: $('st-down'),
   stThr: $('st-thr'),
@@ -521,18 +523,22 @@ function fwAtLeast(ver: string | null, min: readonly number[]): boolean {
 }
 
 window.usv.onLink((link) => {
+  const wasConnected = state.connected;
   state.connected = link.connected;
   state.target = `${link.host}:${link.port}`;
   state.disconnectedSince = link.connected ? null : (state.disconnectedSince ?? Date.now());
   state.lastLinkError = link.lastError;
+  // 断开或刚重连时清掉温度：旧值会被当成「当前温度」，老固件也可能根本不上报
+  if (!link.connected || !wasConnected) paintMcuTemp(null);
   el.stErr.textContent = `${link.crcErrors}`;
   el.stUp.textContent = link.upMs != null ? `${link.upMs.toFixed(1)} ms` : '—';
   el.stDown.textContent = link.downMs != null ? `${link.downMs.toFixed(1)} ms` : '—';
     el.stUp.title = link.rttMs != null ? `往返 ${link.rttMs} ms（对称假设下各取一半）` : '';
     el.stDown.title = el.stUp.title;
   el.fwVersion.textContent = link.fwVersion
-    ? `船端固件 ${link.fwVersion} · caps=0x${link.caps.toString(16)}`
+    ? `船端固件 ${link.fwVersion}${link.testBuild ? '（测试版）' : ''} · caps=0x${link.caps.toString(16)}`
     : '船端固件：未知（未握手，按 v1 运行）';
+  el.fwVersion.className = link.connected && link.testBuild ? 'mono t-warn' : 'mono';
 
   // 回滚保险状态。三种可能必须区分开，否则会把「老固件不会上报」误报成「未装」：
   //   已装  → 绿
@@ -648,6 +654,19 @@ window.usv.onStatus((st) => {
   el.stPts.textContent = `${st.pointsLast} / ${st.scansTotal}`;
   el.stErr.textContent = `${st.rxErrors}`;
 });
+
+/**
+ * 温度配色阈值与文案见 shared/temperature.ts：阈值来自船端内核 thermal trip point
+ * （70 °C 开始降频、90 °C 二次降频、115 °C 保护关机），不是随意取的。
+ */
+function paintMcuTemp(c: number | null): void {
+  const { text, cls } = formatMcuTemp(c);
+  el.stMcuTemp.textContent = text;
+  el.stMcuTemp.className = cls;
+}
+
+// SYS 帧 1Hz；老固件不发这一帧，保持「—」
+window.usv.onSys((s) => paintMcuTemp(s.mcuTempC));
 
 window.usv.onScan((scan) => {
   radar.push(scan);

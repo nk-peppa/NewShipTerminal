@@ -13,7 +13,9 @@ import type {
   PoseView,
   ScanView,
   StatusView,
+  SysView,
 } from '../../shared/api.js';
+import type { SysStatus } from '../../shared/protocol.js';
 import {
   ST_ARMED,
   ST_ARM_REQUIRED,
@@ -281,6 +283,12 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
       loopHz: st.loopHzX10 / 10,
     };
     send('evt:status', view);
+  });
+
+  // SYS 只有 1Hz，直接转发；界面自行判断过期与配色
+  rt.link.on('sys', (sys: SysStatus) => {
+    const view: SysView = { t: Date.now(), mcuTempC: sys.tempC };
+    send('evt:sys', view);
   });
 
   rt.link.on('scan', ({ scan, recvMs }: ReceivedScan) => {
