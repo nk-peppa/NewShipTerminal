@@ -1,4 +1,21 @@
 (() => {
+  // src/shared/temperature.ts
+  var MCU_TEMP_WARN_C = 70;
+  var MCU_TEMP_CRIT_C = 90;
+  function tempLevel(c) {
+    if (c >= MCU_TEMP_CRIT_C) return "crit";
+    if (c >= MCU_TEMP_WARN_C) return "warn";
+    return "ok";
+  }
+  function formatMcuTemp(c) {
+    if (c == null) return { text: "\u2014", cls: "" };
+    const level = tempLevel(c);
+    return {
+      text: `${c.toFixed(1)} \xB0C${level === "crit" ? " \xB7 \u8FC7\u70ED" : level === "warn" ? " \xB7 \u504F\u9AD8" : ""}`,
+      cls: level === "crit" ? "t-bad" : level === "warn" ? "t-warn" : ""
+    };
+  }
+
   // src/renderer/radar.ts
   var AUTO_RINGS_M = [2, 3, 4, 6, 8, 12];
   var BUCKETS = 720;
@@ -737,6 +754,7 @@
     thrBar: $("thr-bar"),
     rudBar: $("rud-bar"),
     stHz: $("st-hz"),
+    stMcuTemp: $("st-mcu-temp"),
     stUp: $("st-up"),
     stDown: $("st-down"),
     stThr: $("st-thr"),
@@ -1096,16 +1114,19 @@
     return true;
   }
   window.usv.onLink((link) => {
+    const wasConnected = state.connected;
     state.connected = link.connected;
     state.target = `${link.host}:${link.port}`;
     state.disconnectedSince = link.connected ? null : state.disconnectedSince ?? Date.now();
     state.lastLinkError = link.lastError;
+    if (!link.connected || !wasConnected) paintMcuTemp(null);
     el.stErr.textContent = `${link.crcErrors}`;
     el.stUp.textContent = link.upMs != null ? `${link.upMs.toFixed(1)} ms` : "\u2014";
     el.stDown.textContent = link.downMs != null ? `${link.downMs.toFixed(1)} ms` : "\u2014";
     el.stUp.title = link.rttMs != null ? `\u5F80\u8FD4 ${link.rttMs} ms\uFF08\u5BF9\u79F0\u5047\u8BBE\u4E0B\u5404\u53D6\u4E00\u534A\uFF09` : "";
     el.stDown.title = el.stUp.title;
-    el.fwVersion.textContent = link.fwVersion ? `\u8239\u7AEF\u56FA\u4EF6 ${link.fwVersion} \xB7 caps=0x${link.caps.toString(16)}` : "\u8239\u7AEF\u56FA\u4EF6\uFF1A\u672A\u77E5\uFF08\u672A\u63E1\u624B\uFF0C\u6309 v1 \u8FD0\u884C\uFF09";
+    el.fwVersion.textContent = link.fwVersion ? `\u8239\u7AEF\u56FA\u4EF6 ${link.fwVersion}${link.testBuild ? "\uFF08\u6D4B\u8BD5\u7248\uFF09" : ""} \xB7 caps=0x${link.caps.toString(16)}` : "\u8239\u7AEF\u56FA\u4EF6\uFF1A\u672A\u77E5\uFF08\u672A\u63E1\u624B\uFF0C\u6309 v1 \u8FD0\u884C\uFF09";
+    el.fwVersion.className = link.connected && link.testBuild ? "mono t-warn" : "mono";
     state.watchdogArmed = link.connected && link.watchdogArmed;
     state.watchdogReportable = fwAtLeast(link.fwVersion, WATCHDOG_CAP_MIN_FW);
     if (!link.connected) {
@@ -1198,6 +1219,12 @@
     el.stPts.textContent = `${st.pointsLast} / ${st.scansTotal}`;
     el.stErr.textContent = `${st.rxErrors}`;
   });
+  function paintMcuTemp(c) {
+    const { text, cls } = formatMcuTemp(c);
+    el.stMcuTemp.textContent = text;
+    el.stMcuTemp.className = cls;
+  }
+  window.usv.onSys((s) => paintMcuTemp(s.mcuTempC));
   window.usv.onScan((scan) => {
     radar.push(scan);
     state.scanTimes.push(Date.now());

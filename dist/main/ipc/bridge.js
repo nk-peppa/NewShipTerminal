@@ -238,6 +238,11 @@ function attachIpc(win, rt) {
         };
         send('evt:status', view);
     });
+    // SYS 只有 1Hz，直接转发；界面自行判断过期与配色
+    rt.link.on('sys', (sys) => {
+        const view = { t: Date.now(), mcuTempC: sys.tempC };
+        send('evt:sys', view);
+    });
     rt.link.on('scan', ({ scan, recvMs }) => {
         const view = {
             t: scan.timeMs || recvMs,

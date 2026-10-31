@@ -11,11 +11,12 @@ var __importDefault = (this && this.__importDefault) || function (mod) {
     return (mod && mod.__esModule) ? mod : { "default": mod };
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.FrameParser = exports.OTA_BEGIN_LEN = exports.TIME_SYNC_RESULT_LEN = exports.PONG_LEN = exports.PING_LEN = exports.STATUS_LEN = exports.CMD_LEN = exports.MAX_PAYLOAD = exports.ST_TIME_BAD = exports.ST_ARM_REQUIRED = exports.ST_LIDAR_OK = exports.ST_FAILSAFE = exports.ST_ESTOP = exports.ST_ARMED = exports.CMD_FLAG_ESTOP = exports.CMD_FLAG_ARM = exports.CAP_WATCHDOG = exports.CAP_SELFTEST = exports.CAP_OTA = exports.CAP_SCAN2 = exports.T_OTA_RESULT = exports.T_OTA_PROGRESS = exports.T_OTA_ACK = exports.T_OTA_ABORT = exports.T_OTA_COMMIT = exports.T_OTA_DATA = exports.T_OTA_BEGIN = exports.T_TIME_SYNC_RESULT = exports.T_SCAN2 = exports.T_PONG = exports.T_HELLO_ACK = exports.T_SCAN = exports.T_STATUS = exports.T_TIME_SYNC = exports.T_PING = exports.T_HELLO = exports.T_CMD = exports.PROTO_VER = exports.FRAME_HEADER = void 0;
+exports.FrameParser = exports.OTA_BEGIN_LEN = exports.TIME_SYNC_RESULT_LEN = exports.PONG_LEN = exports.PING_LEN = exports.SYS_TEMP_UNKNOWN = exports.SYS_LEN = exports.STATUS_LEN = exports.CMD_LEN = exports.MAX_PAYLOAD = exports.ST_TIME_BAD = exports.ST_ARM_REQUIRED = exports.ST_LIDAR_OK = exports.ST_FAILSAFE = exports.ST_ESTOP = exports.ST_ARMED = exports.CMD_FLAG_ESTOP = exports.CMD_FLAG_ARM = exports.CAP_TEST_BUILD = exports.CAP_WATCHDOG = exports.CAP_SELFTEST = exports.CAP_OTA = exports.CAP_SCAN2 = exports.T_OTA_RESULT = exports.T_OTA_PROGRESS = exports.T_OTA_ACK = exports.T_OTA_ABORT = exports.T_OTA_COMMIT = exports.T_OTA_DATA = exports.T_OTA_BEGIN = exports.T_SYS = exports.T_TIME_SYNC_RESULT = exports.T_SCAN2 = exports.T_PONG = exports.T_HELLO_ACK = exports.T_SCAN = exports.T_STATUS = exports.T_TIME_SYNC = exports.T_PING = exports.T_HELLO = exports.T_CMD = exports.PROTO_VER = exports.FRAME_HEADER = void 0;
 exports.crc16 = crc16;
 exports.buildFrame = buildFrame;
 exports.packCmd = packCmd;
 exports.unpackStatus = unpackStatus;
+exports.unpackSys = unpackSys;
 exports.unpackScan = unpackScan;
 exports.packHello = packHello;
 exports.unpackHelloAck = unpackHelloAck;
@@ -43,6 +44,7 @@ exports.T_HELLO_ACK = 0x83;
 exports.T_PONG = 0x84;
 exports.T_SCAN2 = 0x85;
 exports.T_TIME_SYNC_RESULT = 0x86;
+exports.T_SYS = 0x87;
 exports.T_OTA_BEGIN = 0x11;
 exports.T_OTA_DATA = 0x12;
 exports.T_OTA_COMMIT = 0x13;
@@ -55,6 +57,8 @@ exports.CAP_OTA = 1 << 1;
 exports.CAP_SELFTEST = 1 << 4;
 /** 船端 systemd 启动失败回滚看门狗已装（OnFailure + rollback.sh） */
 exports.CAP_WATCHDOG = 1 << 5;
+/** 船端是预发布/测试构建（版本号带 `-test` 后缀），界面应标「测试版」 */
+exports.CAP_TEST_BUILD = 1 << 6;
 exports.CMD_FLAG_ARM = 0x01;
 exports.CMD_FLAG_ESTOP = 0x02;
 exports.ST_ARMED = 1 << 0;
@@ -67,6 +71,10 @@ exports.ST_TIME_BAD = 1 << 5;
 exports.MAX_PAYLOAD = 8192;
 exports.CMD_LEN = 12;
 exports.STATUS_LEN = 26;
+/** SYS：i16 温度(0.1°C) + u16 保留 */
+exports.SYS_LEN = 4;
+/** 温度读不到时的哨兵值（0.1°C 单位，不可能出现的温度） */
+exports.SYS_TEMP_UNKNOWN = -32768;
 function crc16(data, crc = 0xffff) {
     let c = crc;
     for (let i = 0; i < data.length; i++) {
@@ -129,6 +137,13 @@ function unpackStatus(payload) {
         scansTotal: payload.readUInt16LE(22),
         loopHzX10: payload.readUInt16LE(24),
     };
+}
+function unpackSys(payload) {
+    if (payload.length !== exports.SYS_LEN) {
+        throw new Error(`SYS 长度错误: ${payload.length}`);
+    }
+    const x10 = payload.readInt16LE(0);
+    return { tempC: x10 === exports.SYS_TEMP_UNKNOWN ? null : x10 / 10 };
 }
 function unpackScan(payload) {
     if (payload.length < 8)

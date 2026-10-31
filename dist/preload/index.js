@@ -23,6 +23,7 @@ const api = {
     updateFirmware: (file) => electron_1.ipcRenderer.invoke('fw:update', file),
     onFirmware: (cb) => subscribe('evt:fw', cb),
     onStatus: (cb) => subscribe('evt:status', cb),
+    onSys: (cb) => subscribe('evt:sys', cb),
     onScan: (cb) => subscribe('evt:scan', cb),
     onLink: (cb) => subscribe('evt:link', cb),
     onShips: (cb) => subscribe('evt:ships', cb),

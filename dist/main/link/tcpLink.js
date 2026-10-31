@@ -196,6 +196,7 @@ class TcpLink extends node_events_1.EventEmitter {
             fwVersion: this.hello ? this.hello.fw.join('.') : null,
             caps: this.hello?.caps ?? 0,
             watchdogArmed: (((this.hello?.caps ?? 0) & protocol_js_1.CAP_WATCHDOG) !== 0),
+            testBuild: (((this.hello?.caps ?? 0) & protocol_js_1.CAP_TEST_BUILD) !== 0),
             upMs: this.rtt ? Math.round(this.rtt.upMs * 10) / 10 : null,
             downMs: this.rtt ? Math.round(this.rtt.downMs * 10) / 10 : null,
             rttMs: this.rtt ? Math.round(this.rtt.delayMs * 10) / 10 : null,
@@ -267,6 +268,15 @@ class TcpLink extends node_events_1.EventEmitter {
                     this.scanCount++;
                     const received = { scan, recvMs: Date.now() };
                     this.emit('scan', received);
+                }
+                catch (err) {
+                    this.reportDecodeError(err);
+                }
+            }
+            else if (frame.type === protocol_js_1.T_SYS) {
+                try {
+                    const sys = (0, protocol_js_1.unpackSys)(frame.payload);
+                    this.emit('sys', sys);
                 }
                 catch (err) {
                     this.reportDecodeError(err);
