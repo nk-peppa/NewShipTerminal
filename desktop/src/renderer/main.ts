@@ -146,6 +146,8 @@ const state = {
   slamMode: 'mapping' as 'mapping' | 'localization',
   loadedMap: null as string | null,
   selectedMap: null as string | null,
+  /** 删除二次确认：记录待确认的地图名 */
+  deleteConfirm: null as string | null,
   maps: [] as MapEntryView[],
   loc: null as LocalizationStateView | null,
   experiment: null as ExperimentStatusView | null,
@@ -254,7 +256,8 @@ function renderMaps(): void {
     });
     const delBtn = document.createElement('button');
     delBtn.className = 'btn sm';
-    delBtn.textContent = '删除';
+    delBtn.textContent = state.deleteConfirm === m.name ? '确认删除' : '删除';
+    delBtn.classList.toggle('warn', state.deleteConfirm === m.name);
     delBtn.addEventListener('click', (e) => {
       e.stopPropagation();
       void deleteMap(m.name);
@@ -294,6 +297,20 @@ async function saveMap(): Promise<void> {
 }
 
 async function deleteMap(name: string): Promise<void> {
+  if (state.deleteConfirm !== name) {
+    state.deleteConfirm = name;
+    el.mapIo.textContent = `再点一次「删除」确认删除 ${name}（4 秒内有效）`;
+    renderMaps();
+    window.setTimeout(() => {
+      if (state.deleteConfirm === name) {
+        state.deleteConfirm = null;
+        renderMaps();
+        el.mapIo.textContent = '已取消删除';
+      }
+    }, 4000);
+    return;
+  }
+  state.deleteConfirm = null;
   const r = await window.usv.deleteMap(name);
   el.mapIo.textContent = r.ok ? `已删除 ${name}` : r.message;
   if (r.ok && state.selectedMap === name) state.selectedMap = null;

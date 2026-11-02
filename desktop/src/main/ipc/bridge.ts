@@ -76,6 +76,7 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
     null;
   let locState: LocalizationStateView | null = null;
   let experiment: ExperimentRecorder | null = null;
+  let lastExperiment: ExperimentStatusView | null = null;
   let mapLoadWaiter: ((value: Record<string, unknown>) => void) | null = null;
 
   const experimentOff = (): ExperimentStatusView => ({
@@ -95,13 +96,16 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
   });
 
   const sendExperiment = (): void => {
-    send('evt:experiment', experiment?.stats() ?? experimentOff());
+    send('evt:experiment', experiment?.stats() ?? lastExperiment ?? experimentOff());
   };
 
   const stopExperiment = async (reason: string): Promise<void> => {
     const rec = experiment;
     if (!rec) return;
     experiment = null;
+    // 归档后仍保留最后一条记录：面板还能显示目录并「打开目录」，
+    // 只是不再记录、不能再归档。
+    lastExperiment = { ...rec.stats(), active: false };
     const dir = await rec.finalize(reason).catch(() => null);
     rt.log?.event('info', 'experiment-finalized', { dir, reason });
     sendExperiment();
@@ -266,12 +270,15 @@ export function attachIpc(win: BrowserWindow, rt: Runtime): void {
 
   ipcMain.handle('localization:info', (): LocalizationStateView | null => locState);
 
-  ipcMain.handle('experiments:info', (): ExperimentStatusView => experiment?.stats() ?? experimentOff());
+  ipcMain.handle('experiments:info', (): ExperimentStatusView =>
+    experiment?.stats() ?? lastExperiment ?? experimentOff(),
+  );
 
   ipcMain.handle('experiments:open', async (): Promise<{ ok: boolean; message: string }> => {
-    if (!experiment) return { ok: false, message: '当前没有实验记录' };
-    const err = await shell.openPath(experiment.directory);
-    return err ? { ok: false, message: err } : { ok: true, message: experiment.directory };
+    const dir = experiment?.directory ?? lastExperiment?.dir ?? null;
+    if (!dir) return { ok: false, message: '当前没有实验记录' };
+    const err = await shell.openPath(dir);
+    return err ? { ok: false, message: err } : { ok: true, message: dir };
   });
 
   ipcMain.handle('experiments:finalize', async (): Promise<{ ok: boolean; message: string }> => {

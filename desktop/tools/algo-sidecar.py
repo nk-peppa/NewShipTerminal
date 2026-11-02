@@ -261,6 +261,22 @@ def handle_localization_scan(msg: Dict[str, Any]) -> None:
         return
     STATE.scans += 1
     STATE.loc_frames += 1
+    # 全局搜索是同步阻塞的（约 1 s）。先报一次 searching，否则搜索结束后
+    # 只看到 tracking，界面没有“正在搜索”的过程，实验里也无法判断发生过重定位。
+    if not loc.tracking:
+        STATE.last_phase = "searching"
+        emit(
+            {
+                "type": "localization",
+                "phase": "searching",
+                "message": "正在全局定位…",
+                "map": STATE.map_name,
+                "frames": STATE.loc_frames,
+                "trackingFrames": loc.tracking_frames,
+                "candidates": [c.to_dict() for c in loc.candidates[:3]],
+                "metrics": loc.metrics.to_dict(),
+            }
+        )
     try:
         result = loc.update_scan(scan)
     except Exception as exc:  # noqa: BLE001 - 单帧失败不应杀掉侧车
