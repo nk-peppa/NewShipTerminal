@@ -534,6 +534,8 @@ class MapLocalizer:
     def _acceptable(self, result: Result) -> bool:
         return (
             result.metrics.inlier >= self.config.good_inlier
+            and result.metrics.coverage >= self.config.min_coverage
+            and result.metrics.confidence >= self.config.min_confidence
             and result.metrics.matched >= self.config.min_points
             and (result.metrics.rmse is None or result.metrics.rmse <= self.config.max_rmse)
         )
@@ -590,7 +592,10 @@ class MapLocalizer:
             if self.lost_since is None or self.last_timestamp is None
             else max(0.0, self.last_timestamp - self.lost_since)
         )
-        if lost_for >= self.config.relocalize_after:
+        if lost_for >= self.config.relocalize_after and (
+            self.last_global_at is None
+            or (self.last_timestamp or 0.0) - self.last_global_at >= self.config.global_retry_interval
+        ):
             return self._global(points, weights, t0, prefix=message)
         metrics = self._measure(points, weights, self.pose) if self.pose is not None else Metrics()
         result = self._fail(PHASE_LOST, message, metrics)
@@ -653,7 +658,12 @@ class MapLocalizer:
         metrics.dt_ms = (time.perf_counter() - t0) * 1000
         metrics.condition = self._condition(points, best.pose)
 
-        if best.inlier < self.config.min_inlier or best.matched < self.config.min_points:
+        if (
+            best.inlier < self.config.min_inlier
+            or best.matched < self.config.min_points
+            or best.coverage < self.config.min_coverage
+            or best.score < self.config.min_confidence
+        ):
             self.phase = PHASE_LOST
             self.message = (prefix + "；" if prefix else "") + "LOST: 全局定位未找到可信位置"
             self.pose = best.pose
@@ -701,6 +711,7 @@ class MapLocalizer:
             usable = (
                 candidate.matched >= self.config.min_points
                 and candidate.inlier >= self.config.min_inlier
+                and candidate.coverage >= self.config.min_coverage
             )
             totals.append(previous + candidate.score if usable else previous * 0.5)
 
@@ -728,6 +739,8 @@ class MapLocalizer:
 
         acceptable = (
             best.inlier >= self.config.min_inlier
+            and best.coverage >= self.config.min_coverage
+            and best.score >= self.config.min_confidence
             and best.matched >= self.config.min_points
             and (not math.isfinite(best.rmse) or best.rmse <= self.config.max_rmse)
         )

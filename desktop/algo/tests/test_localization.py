@@ -91,6 +91,49 @@ def write_map(directory, walls=WALLS):
     return directory / "map.yaml"
 
 
+def write_isolated_room(directory, half=2.0, extent=40.0):
+    """Small known room inside a 40 m grid; everything else stays unknown.
+
+    This mirrors a real SLAM map: only what the sensor actually saw is known,
+    so a pose far from the mapped area cannot be accepted however well the few
+    visible points happen to line up.
+    """
+    n = int(math.ceil(extent / RES))
+    origin = (-extent / 2, -extent / 2)
+    grid = np.full((n, n), 205, dtype=np.uint8)
+    xs = origin[0] + (np.arange(n) + 0.5) * RES
+    ys = origin[1] + (np.arange(n) + 0.5) * RES
+    xx, yy = np.meshgrid(xs, ys)
+    inside = (np.abs(xx) < half) & (np.abs(yy) < half)
+    grid[inside] = 254
+    walls = [
+        ((-half, -half), (half, -half)),
+        ((half, -half), (half, half)),
+        ((half, half), (-half, half)),
+        ((-half, half), (-half, -half)),
+    ]
+    for (x1, y1), (x2, y2) in walls:
+        length = math.hypot(x2 - x1, y2 - y1)
+        for t in np.linspace(0.0, 1.0, max(2, int(length / (RES * 0.4)))):
+            x = x1 + (x2 - x1) * t
+            y = y1 + (y2 - y1) * t
+            for dx in (-RES * 0.4, 0.0, RES * 0.4):
+                for dy in (-RES * 0.4, 0.0, RES * 0.4):
+                    col = int((x + dx - origin[0]) / RES)
+                    row = int((y + dy - origin[1]) / RES)
+                    if 0 <= row < n and 0 <= col < n:
+                        grid[row, col] = 0
+    (directory / "map.pgm").write_bytes(
+        f"P5\n{n} {n}\n255\n".encode("ascii") + np.flipud(grid).tobytes()
+    )
+    (directory / "map.yaml").write_text(
+        f"image: map.pgm\nresolution: {RES}\norigin: [{origin[0]}, {origin[1]}, 0.0]\n"
+        "negate: 0\noccupied_thresh: 0.65\nfree_thresh: 0.196\n",
+        encoding="utf-8",
+    )
+    return directory / "map.yaml", walls
+
+
 def raycast(x, y, yaw, angles, walls=WALLS, max_range=12.0):
     """Distance to the nearest wall for each beam (x-forward / y-left frame)."""
     out = np.full(len(angles), max_range, dtype=float)
@@ -227,6 +270,31 @@ def test_scan_far_outside_map_is_lost(prior):
     result = loc.update_scan(make_scan(30.0, 30.0, 0.0))
     assert not result.valid
     assert result.phase == "lost"
+
+
+def test_pose_outside_known_area_is_rejected(tmp_path):
+    """A manual seed far from the mapped area must not become TRACKING.
+
+    Real maps only contain what was observed. A scan from an unmapped spot can
+    still line up with the few known walls (inlier ~0.7), but most of its points
+    land in unknown cells. That is not a localization result.
+    """
+    yaml, walls = write_isolated_room(tmp_path)
+    prior = PriorMap(yaml)
+    cfg = LocalizerConfig()
+
+    inside = MapLocalizer(prior, cfg)
+    inside.set_initial_pose(0.0, 0.0, 0.0)
+    good = inside.update_scan(make_scan(0.0, 0.0, 0.0, walls=walls))
+    assert good.phase == PHASE_TRACKING
+    assert good.metrics.coverage > 0.9
+
+    outside = MapLocalizer(prior, cfg)
+    outside.set_initial_pose(8.0, 0.0, 0.0)
+    bad = outside.update_scan(make_scan(8.0, 0.0, 0.0, walls=walls))
+    assert not bad.valid
+    assert bad.phase == "lost", bad.message
+    assert bad.metrics.coverage < cfg.min_coverage
 
 
 def test_manual_pose_clears_ambiguity(prior):

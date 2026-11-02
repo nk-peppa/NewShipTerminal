@@ -19,6 +19,10 @@ class LocalizerConfig:
     good_inlier: float = 0.70  # accept a tracked pose
     min_inlier: float = 0.45  # accept a global candidate
     max_rmse: float = 0.10  # m
+    # A pose whose scan mostly falls outside the map's known cells is not a
+    # localization result, however well the few visible points line up.
+    min_coverage: float = 0.40
+    min_confidence: float = 0.45
     gn_iterations: int = 24
     gn_step_xy: float = 0.25  # m per iteration
     gn_step_yaw: float = 0.08  # rad per iteration
@@ -46,6 +50,7 @@ class LocalizerConfig:
     max_yaw_rate: float = 1.5  # rad/s
     tracking_gap: float = 2.0  # s; longer gap -> lost
     relocalize_after: float = 4.0  # s lost before auto global search
+    global_retry_interval: float = 3.0  # s between global searches while lost
     velocity_decay: float = 0.85
     bootstrap_frames: int = 4  # frames used to disambiguate a global guess
     # --- scan conditioning ------------------------------------------------
@@ -86,6 +91,8 @@ class LocalizerConfig:
             raise ValueError("定位参数必须为有限正数")
         if not 0 < self.min_inlier <= 1 or not 0 < self.good_inlier <= 1:
             raise ValueError("inlier 阈值必须在 (0, 1]")
+        if not 0 < self.min_coverage <= 1 or not 0 < self.min_confidence <= 1:
+            raise ValueError("coverage / confidence 阈值必须在 (0, 1]")
         if self.min_points < 20:
             raise ValueError("min_points 至少 20")
         if self.global_candidates < 1:
