@@ -133,6 +133,7 @@ for (const entry of fs.readdirSync(distSrc)) {
   copyTree(path.join(distSrc, entry), path.join(distDst, entry));
 }
 copyTree(path.join(desktop, 'tools', 'algo-sidecar.py'), path.join(stage, 'tools', 'algo-sidecar.py'));
+copyTree(path.join(desktop, 'tools', 'launcher-update.ps1'), path.join(stage, 'tools', 'launcher-update.ps1'));
 copyTree(path.join(desktop, 'algo', 'cocommand2d'), path.join(stage, 'algo', 'cocommand2d'), skipPyc);
 copyTree(path.join(desktop, 'run-terminal.ps1'), path.join(stage, 'run-terminal.ps1'));
 copyTree(path.join(desktop, 'run-terminal.cmd'), path.join(stage, 'run-usv-terminal.cmd'));

@@ -12,7 +12,8 @@ SLAM 接入、后续录制回放都收在一个应用内。架构决策见 [docs
 
 ## 启动器（`run-terminal.ps1`）
 
-真正的逻辑在 `run-terminal.ps1`，`.cmd` 只是薄壳（保持 ASCII，避免 cmd 代码页问题）。
+真正的逻辑在 `run-terminal.ps1`，`.cmd` 只是薄壳（保持 ASCII，避免 cmd 代码页问题）；
+自动更新的判定与执行放在 `tools/launcher-update.ps1`（可单独运行做诊断）。
 同一份脚本既跑开发树，也跑 `release` 分支的部署快照（后者没有 `src/`，跳过构建）。
 
 | 参数 | 作用 |
@@ -22,19 +23,33 @@ SLAM 接入、后续录制回放都收在一个应用内。架构决策见 [docs
 | `-Sim` | 先拉起假船端再启动（等价于旧的 `run-sim.cmd`） |
 | `-Reinstall` | 强制重装 `node_modules` |
 | `-NoUpdate` | 跳过自动更新 |
+| `-Remote <name\|url>` | 更新源，默认 `origin`；也可用环境变量 `USV_UPDATE_REMOTE` |
+| `-UpdateOnly` | 只做自检 + 自动更新后退出（不装依赖、不构建、不启动） |
 
 它做的五件事：
 
 1. **Node.js** —— 缺失时用 `winget` 装 LTS；装完当前会话 PATH 不刷新，脚本会按
    `C:\Program Files\nodejs\` 显式探测。
-2. **Git 与自动更新** —— 只在当前分支是 `release` 时执行 `git reset --hard origin/release`；
-   开发树（`main`）直接跳过。失败一律非致命，继续启动。
+2. **Git 与自动更新** —— 先 `git remote get-url` 校验更新源，再用 `git ls-remote` 读远端
+   `release` 的 SHA（只读）后决定动作；**只有确认拿到远端 SHA 才可能显示「已是最新」**。
+   - `release` 部署快照：显式 refspec `git fetch` → `git reset --hard`，每步检查退出码；
+   - 其它分支（开发树）：只提示远端 SHA，不重写工作树；
+   - detached HEAD：`git checkout -B release` 重新挂回部署分支；
+   - 失败分四类报告：更新源不可达 / 凭证 / 代理 / 拉取失败，失败绝不冒充「已是最新」；
+   - 代理：`HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 连不上时本次运行忽略它们，并对
+     `http.proxy` / `https.proxy` 做一次绕过重试；`GIT_TERMINAL_PROMPT=0` 避免卡在凭证弹窗。
 3. **依赖** —— `package-lock.json` 的 SHA256 与 `.deps-ok` 比对决定是否 `npm ci`。
    ⚠️ npm 11 会拦 postinstall：`npm ci` 成功但 `electron.exe` 不存在，
    脚本会自动补跑 `node node_modules/electron/install.js`，失败再切
    `ELECTRON_MIRROR` 镜像重试。
 4. **构建** —— 仅开发树；`src/` 里有文件比 `dist/main/index.js` 新时自动 `npm run build`。
+   `-Check` 只报告「dist 落后于源码」，不会构建。
 5. **启动** —— 透传附加参数给 Electron。
+
+> 版本横幅读的是 `build-info.json`。开发树里它是被 gitignore 的构建产物，切分支后可能仍指向
+> 上一棵树，所以启动器会在显示版本前用 `tools/build-info.mjs` 刷新；`-Check` 只读，发现
+> 不一致时显示 `<version> (stale)`。单独诊断更新源：
+> `powershell -NoProfile -File tools\launcher-update.ps1 -Root . -Remote origin`。
 
 联调 / 无实船时用假船端：
 
