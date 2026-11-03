@@ -1,9 +1,9 @@
 {
-  "version": "0.1.1",
-  "sourceCommit": "a68e1319ce38276b1e84002d98625cbe206fa146",
+  "version": "0.1.2",
+  "sourceCommit": "3ae97768d022104861772894c4430a87bec84937",
   "sourceRef": "main",
   "sourceDirty": false,
-  "builtAt": "2026-10-31T10:27:10.546Z",
+  "builtAt": "2026-11-03T04:40:14.834Z",
   "node": "v24.21.0",
   "platform": "win32-x64"
 }
