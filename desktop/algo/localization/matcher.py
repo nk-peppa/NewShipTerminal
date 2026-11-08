@@ -154,6 +154,9 @@ class MapLocalizer:
     # ---- control ------------------------------------------------------------
 
     def set_initial_pose(self, x: float, y: float, yaw: float) -> None:
+        if not np.isfinite([x, y, yaw]).all():
+            raise ValueError("Initial pose must be finite")
+        self.clear_pose()
         self.pose = np.array([float(x), float(y), wrap(float(yaw))], dtype=float)
         self.velocity[:] = 0
         self.phase = PHASE_TRACKING
@@ -168,6 +171,10 @@ class MapLocalizer:
 
     def clear_pose(self) -> None:
         self.pose = None
+        self.last_accepted = None
+        self.last_timestamp = None
+        self.metrics = Metrics()
+        self.last_alternatives = []
         self.velocity[:] = 0
         self.phase = PHASE_WAITING
         self.message = "位姿已清空，下一帧重新全局定位"
@@ -474,10 +481,17 @@ class MapLocalizer:
 
     def update_scan(self, scan) -> Result:
         t0 = time.perf_counter()
-        self.frames += 1
         now = float(scan.timestamp)
+        if not math.isfinite(now) or (self.last_timestamp is not None and now <= self.last_timestamp):
+            raise ValueError("Scan timestamps must be finite and strictly increasing")
+        self.frames += 1
         dt = 0.0 if self.last_timestamp is None else max(0.0, now - self.last_timestamp)
         self.last_timestamp = now
+
+        # No observations supported this velocity during an acquisition gap.
+        # Suspend prediction/deskew rather than deforming the returning scan.
+        if dt > 0.3:
+            self.velocity[:] = 0
 
         points, weights, _meta = scan_points(scan, self.config, self._body_velocity())
         if len(points) < self.config.min_points:
@@ -521,23 +535,26 @@ class MapLocalizer:
 
         seed = self.pose + self.velocity * min(dt, 0.3)
         refined = self.refine(points, weights, seed)
-        if self._acceptable(refined) and self._within_motion(seed, refined.pose, dt):
-            return self._accept(refined, t0, dt)
+        if self._acceptable(refined) and self._within_motion(self.pose, refined.pose, gap):
+            return self._accept(refined, t0, gap)
 
         # Recover with a bounded search from the last accepted pose.
         recovered = self.refine(points, weights, self.pose)
-        if self._acceptable(recovered):
-            return self._accept(recovered, t0, dt)
+        if self._acceptable(recovered) and self._within_motion(self.pose, recovered.pose, gap):
+            return self._accept(recovered, t0, gap)
 
         return self._lost(points, weights, t0, "LOST: 与先验地图不匹配")
 
     def _acceptable(self, result: Result) -> bool:
         return (
-            result.metrics.inlier >= self.config.good_inlier
+            np.isfinite(result.pose).all()
+            and result.metrics.inlier >= self.config.good_inlier
             and result.metrics.coverage >= self.config.min_coverage
             and result.metrics.confidence >= self.config.min_confidence
             and result.metrics.matched >= self.config.min_points
-            and (result.metrics.rmse is None or result.metrics.rmse <= self.config.max_rmse)
+            and result.metrics.rmse is not None
+            and math.isfinite(result.metrics.rmse)
+            and result.metrics.rmse <= self.config.max_rmse
         )
 
     def _within_motion(self, seed: np.ndarray, pose: np.ndarray, dt: float) -> bool:
@@ -603,6 +620,7 @@ class MapLocalizer:
         return result
 
     def _global(self, points: np.ndarray, weights: np.ndarray, t0: float, prefix: str = "") -> Result:
+        self.velocity[:] = 0
         self.phase = PHASE_SEARCHING
         self.message = "正在全局定位…"
         self.tracking = False
@@ -663,6 +681,8 @@ class MapLocalizer:
             or best.matched < self.config.min_points
             or best.coverage < self.config.min_coverage
             or best.score < self.config.min_confidence
+            or not math.isfinite(best.rmse)
+            or best.rmse > self.config.max_rmse
         ):
             self.phase = PHASE_LOST
             self.message = (prefix + "；" if prefix else "") + "LOST: 全局定位未找到可信位置"
@@ -742,7 +762,8 @@ class MapLocalizer:
             and best.coverage >= self.config.min_coverage
             and best.score >= self.config.min_confidence
             and best.matched >= self.config.min_points
-            and (not math.isfinite(best.rmse) or best.rmse <= self.config.max_rmse)
+            and math.isfinite(best.rmse)
+            and best.rmse <= self.config.max_rmse
         )
         if acceptable and relative >= self.config.bootstrap_margin:
             self.hypotheses = []
@@ -782,6 +803,7 @@ class MapLocalizer:
         return Result(pose=best.pose, phase=self.phase, message=self.message, metrics=metrics, valid=True)
 
     def _fail(self, phase: str, message: str, metrics: Metrics) -> Result:
+        self.velocity[:] = 0
         self.phase = phase
         self.message = message
         self.metrics = metrics
