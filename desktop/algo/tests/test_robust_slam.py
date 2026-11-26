@@ -338,16 +338,17 @@ def test_bad_frame_breaks_recovery_confirmations():
     assert slam.status == "TRACKING"
 
 
-def test_provisional_matches_cannot_extend_recovery_deadline():
+def test_recovery_window_is_not_a_hard_deadline_for_confirmed_matches():
     slam = initialized_slam(SlamConfig(max_tracking_gap=1.0))
     before_map, before_pose = slam.grid.log_odds.copy(), slam.pose.copy()
-    for t in (1.5, 1.6, 1.8, 1.9, 2.0):
+    for t in (1.5, 1.6):
         slam.update(room_scan(np.zeros(3), t))
         assert not slam.diagnostics[-1]["accepted"]
         np.testing.assert_array_equal(slam.grid.log_odds, before_map)
         np.testing.assert_array_equal(slam.pose, before_pose)
         assert slam.last_accepted_timestamp == pytest.approx(.7)
-    assert "recovery timeout" in slam.status
+    slam.update(room_scan(np.zeros(3), 1.8))
+    assert slam.diagnostics[-1]["recovered"]
 
 
 def test_confirmation_frames_must_be_close_in_time():
@@ -460,9 +461,9 @@ def test_invalid_recovery_configuration_is_rejected(values):
         SlamConfig(**values)
 
 
-def test_default_five_second_window_can_resume_after_four_second_outage():
+def test_default_window_can_resume_after_four_second_outage():
     slam = initialized_slam()
-    assert slam.config.max_tracking_gap == 5
+    assert slam.config.max_tracking_gap == 30
     before = slam.grid.log_odds.copy()
     for i, t in enumerate((4.7, 4.8, 4.9)):
         slam.update(room_scan(np.array([.2, .05, .03]), t))
@@ -473,14 +474,17 @@ def test_default_five_second_window_can_resume_after_four_second_outage():
     assert np.linalg.norm(slam.pose[:2]-[.2, .05]) < .03
 
 
-def test_default_recovery_still_expires_after_five_seconds():
+@pytest.mark.parametrize("start", [5.8, 12.0, 40.0])
+def test_default_recovery_resumes_after_long_outage(start):
     slam = initialized_slam()
     before = slam.grid.log_odds.copy()
-    for t in (5.8, 5.9, 6.0):
-        slam.update(room_scan(np.zeros(3), t))
-        assert "recovery timeout" in slam.status
-        assert not slam.diagnostics[-1]["accepted"]
-        np.testing.assert_array_equal(slam.grid.log_odds, before)
+    for i in range(3):
+        slam.update(room_scan(np.zeros(3), start+.1*i))
+        if i < 2:
+            assert not slam.diagnostics[-1]["accepted"]
+            np.testing.assert_array_equal(slam.grid.log_odds, before)
+    assert slam.diagnostics[-1]["recovered"]
+    assert np.linalg.norm(slam.pose[:2]) < .03
 
 
 def test_rings_cannot_seed_the_initial_reference_in_pool_mode():

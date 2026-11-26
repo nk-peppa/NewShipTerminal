@@ -19,7 +19,9 @@ class SlamConfig:
     max_rmse: float = .075
     max_speed: float = 2.0  # m/s rejection bound, not odometry
     max_yaw_rate: float = 1.5  # rad/s
-    max_tracking_gap: float = 5.0  # total recovery deadline since last accepted scan
+    max_tracking_gap: float = 30.0  # switch to periodic recovery; never permanently latch LOST
+    recovery_retry_interval: float = 1.0
+    recovery_search_radius: float = 3.0
     max_tilt: float = .21  # requires supplied attitude, radians
     max_height: float = .35  # m from instantaneous sensor-level plane
     deskew: bool = True
@@ -30,7 +32,8 @@ class SlamConfig:
 
     def __post_init__(self):
         values = (self.max_rmse, self.max_speed, self.max_yaw_rate,
-                  self.max_tracking_gap, self.max_tilt, self.max_height, self.recovery_frame_gap)
+                  self.max_tracking_gap, self.max_tilt, self.max_height, self.recovery_frame_gap,
+                  self.recovery_retry_interval, self.recovery_search_radius)
         if (not all(np.isfinite(v) and v > 0 for v in values) or self.max_tilt > np.pi/2 or
                 not 0 < self.min_inlier_ratio <= 1 or
                 not isinstance(self.min_points, (int, np.integer)) or self.min_points < 20 or
@@ -70,6 +73,7 @@ class LidarSlam:
         self._recovery_pose = self._recovery_timestamp = None
         self._recovery_count = 0
         self.temporal_support = TemporalSupport()
+        self._last_recovery_attempt = -float("inf")
 
     def _clear_recovery_candidate(self):
         self._recovery_pose = self._recovery_timestamp = None
@@ -128,7 +132,7 @@ class LidarSlam:
         self.planar = (eigen[:, 0] / np.maximum(eigen[:, 1], 1e-9) < .15) & (distances[:, -1] < .65)
         self.last_key_pose = self.pose.copy()
 
-    def _match(self, points, seed, point_weights, dt):
+    def _match(self, points, seed, point_weights, dt, recovery=False):
         pose = seed.copy()
         stats = {"rmse": None, "inlier_ratio": 0.0, "confidence": 0.0}
         prediction = np.linalg.norm(seed[:2]-self.pose[:2]) + 3*abs(wrap(seed[2]-self.pose[2]))
@@ -194,8 +198,8 @@ class LidarSlam:
                 bad_sectors += 1
         if bad_sectors >= 2:
             return None, "LOST: sector distortion", stats
-        if (np.linalg.norm(pose[:2]-self.pose[:2]) > min(.8, .10+self.config.max_speed*dt) or
-                abs(wrap(pose[2]-self.pose[2])) > min(.45, .04+self.config.max_yaw_rate*dt)):
+        if (np.linalg.norm(pose[:2]-self.pose[:2]) > min(self.config.recovery_search_radius if recovery and dt > 5.0 else .8, .10+self.config.max_speed*dt) or
+                abs(wrap(pose[2]-self.pose[2])) > min(.75 if recovery and dt > 5.0 else .45, .04+self.config.max_yaw_rate*dt)):
             return None, "LOST: excessive motion", stats
         stats["confidence"] = float(np.clip(ratio * np.exp(-(rmse/.09)**2), .25, 1))
         return pose, "TRACKING", stats
@@ -236,9 +240,10 @@ class LidarSlam:
     def _local_search(self, points, seed, weights, dt, recovery=False):
         """Bounded correlative seed search, not global relocalization."""
         sparse = points[::max(1, len(points)//120)]
-        radius = min(.6 if recovery else .24, .08 + self.config.max_speed*dt)
+        extended = recovery and dt > 5.0
+        radius = min(self.config.recovery_search_radius if extended else (.6 if recovery else .24), .08 + self.config.max_speed*dt)
         yaw = min(.3 if recovery else .16, .03 + self.config.max_yaw_rate*dt)
-        offsets = np.linspace(-radius, radius, 5) if recovery else (-radius, 0, radius)
+        offsets = np.linspace(-radius, radius, (max(5, int(np.ceil(2*radius/.4))+1) if extended else 5)) if recovery else (-radius, 0, radius)
         seeds = []
         for angle in np.linspace(-yaw, yaw, 5):
             for dx in offsets:
@@ -248,10 +253,19 @@ class LidarSlam:
                     score = float(np.mean(np.minimum(distance, .4)**2))
                     seeds.append((score, candidate))
         best = None
-        for _, candidate in sorted(seeds, key=lambda item: item[0])[:3]:
-            result = self._match(points, candidate, weights, dt)
+        solutions = []
+        for _, candidate in sorted(seeds, key=lambda item: item[0])[:6 if extended else 3]:
+            result = self._match(points, candidate, weights, dt, recovery=recovery)
+            if result[0] is not None:
+                solutions.append(result)
             if result[0] is not None and (best is None or result[2]["confidence"] > best[2]["confidence"]):
                 best = result
+        if extended and best is not None:
+            for candidate, _, stats in solutions:
+                separated = (np.linalg.norm(candidate[:2]-best[0][:2]) > .35 or
+                             abs(wrap(candidate[2]-best[0][2])) > .12)
+                if separated and stats["confidence"] >= .95*best[2]["confidence"]:
+                    return None, "LOST: ambiguous recovery", best[2]
         return best
 
     def _confirm_recovery(self, points, weights, timestamp, dt):
@@ -261,8 +275,11 @@ class LidarSlam:
                 timestamp-self._recovery_timestamp > self.config.recovery_frame_gap + 1e-9):
             self._clear_recovery_candidate()
         seed = self.pose if self._recovery_pose is None else self._recovery_pose
-        estimate, status, stats = self._match(points, seed, weights, dt)
-        if estimate is None:
+        estimate, status, stats = self._match(points, seed, weights, dt, recovery=True)
+        if estimate is None or (dt > 5.0 and self._recovery_pose is None):
+            estimate = None
+            status = "LOST: no unambiguous recovery match"
+            stats = {"rmse": None, "inlier_ratio": 0.0, "confidence": 0.0}
             retry = self._local_search(points, self.pose, weights, dt, recovery=True)
             if retry is not None:
                 estimate, status, stats = retry
@@ -315,15 +332,22 @@ class LidarSlam:
         meta["seconds_since_trusted"] = float(dt)
         meta["recovery_confirmations"] = 0
         meta["recovered"] = False
+        meta["pose_valid"] = False
+        meta["motion_observable"] = False
+        meta["recovery_mode"] = "periodic" if established and dt > self.config.max_tracking_gap else "continuous"
         accepted = False
-        if established and dt > self.config.max_tracking_gap + 1e-9:
-            self.status = "LOST: recovery timeout; restart a new map"
+        retry_interval = self.config.recovery_retry_interval if dt > self.config.max_tracking_gap else .5
+        if (established and dt > 5.0
+                and self._recovery_pose is None
+                and scan.timestamp-self._last_recovery_attempt < retry_interval):
+            self.status = "LOST: awaiting periodic recovery; pose unknown"
         elif len(match_points) < self.config.min_points:
             self.status = "LOST: too few reliable returns"
         elif self.tree is None:
             self.status = "INITIALIZING: 1/3 consistent scans"
             self._start_candidate(match_points, scan.timestamp)
         elif self._recovering:
+            self._last_recovery_attempt = scan.timestamp
             estimate, self.status, stats = self._confirm_recovery(match_points, match_weights, scan.timestamp, dt)
             meta["recovery_confirmations"] = self._recovery_count
             if estimate is not None:
@@ -390,6 +414,8 @@ class LidarSlam:
         self.rmse = stats["rmse"] if stats["rmse"] is not None else float("inf")
         self.inlier_ratio = stats["inlier_ratio"]
         self.confidence = stats["confidence"] if accepted else 0.0
+        meta["pose_valid"] = accepted
+        meta["motion_observable"] = accepted
         stats["confidence"] = self.confidence
         self.trajectory.append((scan.timestamp, *self.pose, self.status))
         self.diagnostics.append(dict(timestamp=scan.timestamp, status=self.status,

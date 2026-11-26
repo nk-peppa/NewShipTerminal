@@ -94,6 +94,7 @@ export class SlamMapView {
   pushPose(p: PoseView): void {
     this.pose = p;
     this.lastStatus = p.status;
+    if (p.poseValid === false) return; // Held coordinates are not a new trajectory observation.
     const last = this.track[this.track.length - 1];
     if (!last || Math.hypot(p.x - last[0], p.y - last[1]) > 0.03) {
       this.track.push([p.x, p.y]);
@@ -334,6 +335,11 @@ export class SlamMapView {
     }
     ctx.fillStyle = modeColor;
     ctx.fillText(modeText, 12 * dpr, 12 * dpr + fs * 2.7);
+    if (this.pose?.poseValid === false) {
+      ctx.fillStyle = 'rgba(255, 176, 32, 0.95)';
+      ctx.fillText('Pose unknown - last trusted position; motion may continue',
+        12 * dpr, 12 * dpr + fs * 4.4);
+    }
   }
 
   private poseColor(): string {
