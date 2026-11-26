@@ -279,6 +279,7 @@ class LidarSlam:
         if estimate is None or (dt > 5.0 and self._recovery_pose is None):
             estimate = None
             status = "LOST: no unambiguous recovery match"
+            stats = {"rmse": None, "inlier_ratio": 0.0, "confidence": 0.0}
             retry = self._local_search(points, self.pose, weights, dt, recovery=True)
             if retry is not None:
                 estimate, status, stats = retry

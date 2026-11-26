@@ -1,0 +1,12 @@
+{
+  "format": "sha256 of UTF-8 LF text",
+  "base_commit": "3ae97768d022104861772894c4430a87bec84937",
+  "files": {
+    "cocommand2d/slam/core.py": "f5b8468852fc443418edab1f2ea43489127c2ec681b39e34a93181770349fd33",
+    "cocommand2d/slam/preprocessing.py": "ed7d7ff2126dfaa0b84009b6c167f90a52cc14b81b48ae3ad26814686ce712cd",
+    "cocommand2d/slam/grid.py": "17789dbbfab08945b57fafd7fc40f0e801517171a4e36830aa3cd8b87af22b86",
+    "tests/test_robust_slam.py": "9116f43ac3a35a6ef9f3915aadbab0efd0c3e15e5daf95e96ad99f486667ca55",
+    "tests/test_persistent_recovery.py": "74ad066dcfd5c5be458054932f3720881af0e795e7486c032f79ae9c2d4e4cf1",
+    "tests/test_sidecar_pose_validity.py": "77ac1a6ad48f03f1befe549552a3a963421b770aa2541fae93500e4cd49acc34"
+  }
+}

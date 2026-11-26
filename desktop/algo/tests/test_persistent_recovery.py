@@ -44,3 +44,13 @@ def test_periodic_attempts_remain_recoverable_and_confirmations_are_not_throttle
 def test_invalid_search_configuration(options):
     with pytest.raises(ValueError):
         SlamConfig(**options)
+
+
+def test_discarded_direct_match_cannot_publish_good_quality(monkeypatch):
+    slam = initialized_slam()
+    monkeypatch.setattr(slam, '_match', lambda *a, **kw:
+        (np.zeros(3), 'TRACKING', dict(rmse=.001, inlier_ratio=.99, confidence=.99, overlap_ratio=.99)))
+    monkeypatch.setattr(slam, '_local_search', lambda *a, **kw: None)
+    pose, status, stats = slam._confirm_recovery(np.zeros((60, 2)), np.ones(60), 10., 9.3)
+    assert pose is None and status.startswith('LOST')
+    assert stats == dict(rmse=None, inlier_ratio=0., confidence=0.)
