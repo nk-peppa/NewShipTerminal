@@ -120,3 +120,8 @@ python -m pytest tests -q
 `RECOVERING` 状态及保留位姿语义见 `desktop/docs/slam-integration.md`。
 四项仓库检查：算法 81 项、Node 12 项、实时接入 13 项、导出 24 项全部通过；
 合成测试不等于实船验证。
+# 本地算法维护更新（2026-11-26）
+
+经用户明确要求，本次直接维护算法本体并覆盖本地运行副本。
+以现场构建 `3ae9776` 为基线更新持续恢复逻辑；首次导入哈希表仅作历史追溯。
+实现、测试及接口说明见 `../docs/persistent-recovery.md`。

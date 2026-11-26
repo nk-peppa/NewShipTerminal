@@ -77,3 +77,11 @@ python algo\run_slam.py --input recordings\session-20261030-101500\scans.jsonl -
   诊断会标 `missing_timing` / `unavailable`。这是数据缺口，不是算法缺陷。
 - `run_slam.py` 要求输出目录尚不存在；一次回放一个新目录，便于对比。
 - 有大量隔离帧或只生成局部地图时退出码为 2，**生成了文件不等于定位成功**。
+# 持续恢复更新（2026-11-26）
+
+`poseValid` 仅在当前帧通过完整匹配与确认时为 true；初始化、恢复确认、LOST、
+DEGENERATE 均为 false。坐标冻结表示最后可信位姿，不能解释为船静止。
+新增原因字符串 `LOST: awaiting periodic recovery; pose unknown`、
+`LOST: ambiguous recovery` 和 `LOST: no unambiguous recovery match`，
+继续按原有状态前缀解析。接口版本与坐标单位不变。
+默认恢复窗口 30 秒，随后持续限频恢复；详细规则见 `persistent-recovery.md`。

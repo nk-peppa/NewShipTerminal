@@ -164,7 +164,7 @@ def handle_scan(msg: Dict[str, Any]) -> None:
             "y": round(float(pose[1]), 4),
             "yaw": round(float(pose[2]), 5),
             "status": STATE.slam.status,
-            "poseValid": STATE.slam.status.startswith(("TRACKING", "INITIALIZING")),
+            "poseValid": bool(STATE.slam.diagnostics[-1]["accepted"]),
             "rmse": finite(STATE.slam.rmse),
             "inlier": round(float(STATE.slam.inlier_ratio), 3),
             "scans": STATE.scans,
